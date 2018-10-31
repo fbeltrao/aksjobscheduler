@@ -22,6 +22,9 @@ const StorageContainerLabelName = "storage_container"
 // StorageBlobPrefixLabelName defines the label name containing the storage blob input prefix
 const StorageBlobPrefixLabelName = "storage_blob_prefix"
 
+// PartsLabelName defines the label name containing the amount of parts the job is divided into
+const PartsLabelName = "parts"
+
 // JobStorageContainerEnvVarName defines the environment variable containing the storage container for the job
 const JobStorageContainerEnvVarName = "STORAGECONTAINER"
 
@@ -60,7 +63,7 @@ var (
 	maxParallelism = flag.Int("maxParallelism", getEnvInt("MAXPARALLELISM", 2), "Max parallelism for local cluster (2 by default)")
 
 	// aciMaxParallelism defines the max. amount of concurrent pods in a job when running in ACI
-	aciMaxParallelism = flag.Int("aciMaxParallelism", getEnvInt("ACIMAXPARALLELISM", 4), "Max parallelism for ACI (4 by default)")
+	aciMaxParallelism = flag.Int("aciMaxParallelism", getEnvInt("ACIMAXPARALLELISM", 50), "Max parallelism for ACI (50 by default)")
 
 	// linesPerJob defines the amount of lines each job will process
 	linesPerJob = flag.Int("linesPerJob", getEnvInt("LINESPERJOB", 100000), "Lines per job (100'000 by default)")
@@ -149,22 +152,22 @@ func Initialize() error {
 		}
 	}
 
-	log.Infof("Storage account: %s\n", *storageAccountName)
-	log.Infof("Storage key: %s\n", *storageAccountKey)
-	log.Infof("Kube config file: %s\n", *kubeConfig)
-	log.Infof("Default container: %s\n", *containerName)
-	log.Infof("Max parallelism: %d\n", *maxParallelism)
-	log.Infof("ACI max parallelism: %d\n", *aciMaxParallelism)
-	log.Infof("Lines per job: %d\n", *linesPerJob)
-	log.Infof("Job image: %s\n", *jobImage)
-	log.Infof("Job CPU limit: %s\n", *jobCPULimit)
-	log.Infof("Job memory limit: %s\n", *JobMemoryLimit)
-	log.Infof("ACI job CPU limit: %s\n", *aciJobCPULimit)
-	log.Infof("ACI job memory limit: %s\n", *aciJobMemoryLimit)
-	log.Infof("ACI file threshold: %d\n", *aciCompletionsTrigger)
-	log.Infof("ACI selector host name: %s\n", *aciSelectorHostName)
-	log.Infof("Job Finished Event Grid topic endpoint: %s\n", *jobFinishedEventGridTopicEndpoint)
-	log.Infof("Job Finished Event Grid sas key: %s\n", *jobFinishedEventGridSasKey)
+	log.Infof("Storage account: %s", *storageAccountName)
+	log.Infof("Storage key: %s", *storageAccountKey)
+	log.Infof("Kube config file: %s", *kubeConfig)
+	log.Infof("Default container: %s", *containerName)
+	log.Infof("Max parallelism: %d", *maxParallelism)
+	log.Infof("ACI max parallelism: %d", *aciMaxParallelism)
+	log.Infof("Lines per job: %d", *linesPerJob)
+	log.Infof("Job image: %s", *jobImage)
+	log.Infof("Job CPU limit: %s", *jobCPULimit)
+	log.Infof("Job memory limit: %s", *JobMemoryLimit)
+	log.Infof("ACI job CPU limit: %s", *aciJobCPULimit)
+	log.Infof("ACI job memory limit: %s", *aciJobMemoryLimit)
+	log.Infof("ACI file threshold: %d", *aciCompletionsTrigger)
+	log.Infof("ACI selector host name: %s", *aciSelectorHostName)
+	log.Infof("Job Finished Event Grid topic endpoint: %s", *jobFinishedEventGridTopicEndpoint)
+	log.Infof("Job Finished Event Grid sas key: %s", *jobFinishedEventGridSasKey)
 
 	return nil
 }

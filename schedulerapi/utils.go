@@ -1,10 +1,15 @@
 package schedulerapi
 
 import (
+	"encoding/json"
 	"math/rand"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func randomString() string {
@@ -51,4 +56,29 @@ func homeDir() string {
 		return h
 	}
 	return os.Getenv("USERPROFILE") // windows
+}
+
+func responseWithError(w http.ResponseWriter, err error) {
+
+	log.Error(err)
+
+	respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+}
+
+func responseWithApplicationError(w http.ResponseWriter, code int, message string) {
+	respondWithJSON(w, code, map[string]string{"message": message})
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.WriteHeader(code)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func encodeBlobNamePrefix(blobNamePrefix string) string {
+	return strings.Replace(blobNamePrefix, "/", "__", -1)
+}
+
+func decodeBlobNamePrefix(encodedBlobNamePrefix string) string {
+	return strings.Replace(encodedBlobNamePrefix, "__", "/", -1)
 }

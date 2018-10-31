@@ -60,6 +60,13 @@ func SetupRoutes(router *mux.Router) {
 		},
 
 		Route{
+			"GetJobResults",
+			"GET",
+			"/jobs/{id}/results",
+			getJobResultHandler,
+		},
+
+		Route{
 			"DeleteJob",
 			"DELETE",
 			"/jobs/{id}",

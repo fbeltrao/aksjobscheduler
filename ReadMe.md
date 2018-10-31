@@ -1,6 +1,8 @@
 # Scheduling Jobs in AKS with Virtual Kubelet
 
-Most Kubernetes examples and sample applications demonstrate how to run web applications or databases in the orchestrator. Those workloads run until terminated.
+![Scheduling Jobs in AKS with Virtual Kubelet](./media/aksjobscheduler.png)
+
+Most Kubernetes sample applications demonstrate how to run web applications or databases in the orchestrator. Those workloads run until terminated.
 
 However, Kubernetes is also able to run jobs, or in other words, a container that runs for a finite amount of time.
 
@@ -15,7 +17,7 @@ This repository contains a demo application that schedules `Run to Completion` j
 
 Company is using a Kubernetes cluster to host a few applications. Cluster resource utilization is high and team wants to avoid oversizing. One of the teams has new requirement to run jobs with unpredicable loads. In high peaks, the required compute resources will exceed what is available in the cluster.
 
-A solution to this problem is to leverage Virtual Kubelet, scheduling jobs that would starve the cluster outside of it.
+A solution to this problem is to leverage Virtual Kubelet, scheduling jobs outside the cluster in case workload would starve available resources.
 
 ## Running containers in Virtual Kubelet in Azure
 
@@ -74,7 +76,7 @@ POD_NAME=$(kubectl get pods -l "job-name=pi" -o jsonpath='{.items[0].metadata.na
 3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679821480865132823066470938446095505822317253594081284811174502841027019385 REMOVED-TO-SAVE-SPACE
 ```
 
-To run the same job using Virtual Kubelet add the pod affinity information as the yaml below:
+To run the same job using Virtual Kubelet add the pod affinity information as the yaml below (if your cluster is not in westeurope you need to change the value of "kubernetes.io/hostname"):
 
 ```yaml
 apiVersion: batch/v1
@@ -130,6 +132,47 @@ The result of the create job request is the jobID. The ultimate result calculate
 
 Besides copying the input file to Azure Storage the Jobs API will create index files that will identity where each N amount of lines start on the input file. Those small index files will be used by workers to [lease](https://docs.microsoft.com/en-us/rest/api/storageservices/lease-blob) a range of lines to be processed, preventing parallel workers from processing the same content.
 
+## Running sample application in AKS
+
+1. Create a new storage account (the sample application will store input and output files there)
+
+2. Deploy application to your AKS with the provided deployment.yaml file. Keep in mind that the deployment will create a new public IP since the service is of type LoadBalancer. Modify the deployment.yaml file to contain your storage credentials.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+2. Watch the Jobs API logs
+
+```bash
+POD_NAME=$(kubectl get pods -l "app=jobscheduler" -o jsonpath='{.items[0].metadata.name}') && clear && kubectl logs $POD_NAME -f
+```
+
+3. Create a new job by uploading an input file (modify the file path)
+
+```bash
+curl -X POST \
+  http://{location-of-jobs-api}/jobs \
+  -H 'Content-Type: multipart/form-data' \
+  -H 'cache-control: no-cache' \
+  -H 'content-type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW' \
+  -F file=@/path/to/sample_large_work.json
+```
+
+4. Look at the job status
+
+```bash
+curl http://{location-of-jobs-api}/jobs/{job-id}
+
+{"id":"2018-10-4610526630846599105","status":"Complete","startTime":"2018-10-31T12:31:52Z","completionTime":"2018-10-31T12:33:57Z","succeeded":13,"parallelism":4,"parts":13,"completions":13,"storageContainer":"jobs","storageBlobPrefix":"2018-10/4610526630846599105","runningOnAci":true}
+```
+
+5. Download the job result once finished in parts or as a single file (remove the parts query string parameter)
+
+```bash
+curl http://{location-of-jobs-api}/jobs/{job-id}/results?part=13
+```
+
 ### Jobs Web API
 
 Besides interacting with Azure Storage, the API schedules jobs in Kubernetes using the client API ([using the go-client](https://github.com/kubernetes/client-go)).
@@ -162,7 +205,7 @@ The API can be configures using environment variables as detailed here:
 |STORAGEKEY|Storage account key||
 |CONTAINERNAME|Storage container name|jobs|
 |MAXPARALLELISM|Max parallelism for local cluster|2|
-|ACIMAXPARALLELISM|Max parallelism for ACI|4|
+|ACIMAXPARALLELISM|Max parallelism for ACI|50|
 |LINESPERJOB|Lines per job|100'000|
 |ACICOMPLETIONSTRIGGER|Defines the amount of completions necessary to execute the job using virtual kubelet|Default is 6. 0 to disable ACI|
 |ACIHOSTNAME|Defines the ACI host name|virtual-kubelet-virtual-kubelet-linux-westeurope|
@@ -173,6 +216,7 @@ The API can be configures using environment variables as detailed here:
 |ACIJOBMEMORYLIMIT|Job Memory limit for ACI|1Gi|
 |EVENTGRIDENDPOINT|Event Grid event endpoint to publish when job is done||
 |EVENTGRIDSASKEY|Event Grid sas key publish when job is done||
+|DEBUGLOG|Enabled debug log level|false|
 
 Source code is located at /server
 

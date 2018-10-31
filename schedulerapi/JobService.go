@@ -3,9 +3,9 @@ package schedulerapi
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -14,8 +14,8 @@ import (
 	"github.com/Azure/azure-pipeline-go/pipeline"
 	azblob "github.com/Azure/azure-storage-blob-go/azblob"
 	scheduler "github.com/fbeltrao/aksjobscheduler/scheduler"
+	errors "github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	batchv1 "k8s.io/api/batch/v1"
 )
 
 func createScheduler() (*scheduler.Scheduler, error) {
@@ -60,7 +60,8 @@ func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesC
 		return err
 	}
 
-	completions := int(math.Ceil(float64(linesCount) / float64(*linesPerJob)))
+	parts := int(math.Ceil(float64(linesCount) / float64(*linesPerJob)))
+	completions := parts // completions might be increase to accomodate finished notification
 	requiresACI := *aciCompletionsTrigger > 0 && completions >= *aciCompletionsTrigger
 	parallelism := *maxParallelism
 	cpuLimit := *jobCPULimit
@@ -88,7 +89,7 @@ func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesC
 		parallelism--
 	}
 
-	log.Printf("Starting job %s, lines count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, linesCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
+	log.Infof("Starting job %s, lines count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, linesCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
 
 	jobDetail := scheduler.NewJobDetail{
 		Completions: completions,
@@ -103,7 +104,8 @@ func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesC
 		Labels: map[string]string{
 			CreatedByLabelName:         CreatedByLabelValue,
 			StorageContainerLabelName:  containerName,
-			StorageBlobPrefixLabelName: base64.StdEncoding.EncodeToString([]byte(blobNamePrefix)),
+			StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
+			PartsLabelName:             strconv.Itoa(parts),
 		},
 	}
 
@@ -164,14 +166,17 @@ func verifyJobInputFiles(r *http.Request, blobContainerName, jobNamePrefix strin
 
 // CreateJobInputFile creates the input file in blob storage, returning the amount of lines
 func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string) (int, error) {
+
+	log.Debugf("Starting job input file creation. container: %s, prefix: %s", blobContainerName, jobNamePrefix)
+
 	err := r.ParseForm()
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "error parsing form")
 	}
 
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "error creating form file")
 	}
 
 	defer file.Close()
@@ -203,7 +208,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 	containerURL := azblob.NewContainerURL(*URL, p)
 
 	// Create the container
-	log.Printf("Creating a container named %s\n", blobContainerName)
+	log.Infof("Creating a container named %s", blobContainerName)
 	_, err = containerURL.Create(r.Context(), azblob.Metadata{}, azblob.PublicAccessNone)
 	if err != nil {
 		storageError, _ := err.(azblob.StorageError)
@@ -215,7 +220,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 	targetBlobName := fmt.Sprintf("%s/input.json", jobNamePrefix)
 
 	appendBlobURL := containerURL.NewAppendBlobURL(targetBlobName)
-	log.Printf("Copying uploaded file to %s", targetBlobName)
+	log.Infof("Copying uploaded file to %s", targetBlobName)
 
 	bufferContentSize := 0
 
@@ -252,7 +257,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 			controlBlobName := fmt.Sprintf("%s/ctrl_input_%d_%d", jobNamePrefix, currentJobIndex, lastJobByteIndex)
 			controlBlobURL := containerURL.NewAppendBlobURL(controlBlobName)
 
-			log.Printf("Creating control blob %s\n", controlBlobName)
+			log.Infof("Creating control blob %s", controlBlobName)
 			controlBlobURL.Create(r.Context(),
 				azblob.BlobHTTPHeaders{},
 				azblob.Metadata{
@@ -287,6 +292,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 				blobCreated = true
 			}
 			bytesToWrite := buffer.Bytes()
+			log.Debugf("Appending %d bytes to %s", len(bytesToWrite), targetBlobName)
 			_, err := appendBlobURL.AppendBlock(r.Context(), bytes.NewReader(bytesToWrite), azblob.AppendBlobAccessConditions{}, nil)
 
 			if err != nil {
@@ -317,7 +323,9 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 			}
 			blobCreated = true
 		}
-		_, err := appendBlobURL.AppendBlock(r.Context(), bytes.NewReader(buffer.Bytes()), azblob.AppendBlobAccessConditions{}, nil)
+		bytesToWrite := buffer.Bytes()
+		log.Debugf("Appending %d bytes to %s", len(bytesToWrite), targetBlobName)
+		_, err := appendBlobURL.AppendBlock(r.Context(), bytes.NewReader(bytesToWrite), azblob.AppendBlobAccessConditions{}, nil)
 
 		if err != nil {
 			return 0, err
@@ -328,7 +336,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 		controlBlobName := fmt.Sprintf("%s/ctrl_input_%d_%d", jobNamePrefix, currentJobIndex, lastJobByteIndex)
 		controlBlobURL := containerURL.NewAppendBlobURL(controlBlobName)
 
-		log.Printf("Creating control blob %s\n", controlBlobName)
+		log.Infof("Creating control blob %s", controlBlobName)
 		_, err = controlBlobURL.Create(r.Context(),
 			azblob.BlobHTTPHeaders{},
 			azblob.Metadata{
@@ -344,70 +352,75 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 	return totalLines, nil
 }
 
-func responseWithError(w http.ResponseWriter, err error) {
-	errorMsg := err.Error()
-	log.Println(errorMsg)
-
-	respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": errorMsg})
-}
-
-func responseWithApplicationError(w http.ResponseWriter, code int, message string) {
-	respondWithJSON(w, code, map[string]string{"message": message})
-}
-
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	w.WriteHeader(code)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func createJob(job batchv1.Job) Job {
-	storageBlobPrefix := ""
-	if storageBlobPrefixBytes, err := base64.StdEncoding.DecodeString(job.ObjectMeta.Labels[StorageBlobPrefixLabelName]); err == nil {
-		if storageBlobPrefixBytes != nil && len(storageBlobPrefixBytes) > 0 {
-			storageBlobPrefix = string(storageBlobPrefixBytes)
-		}
+func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNamePrefix string, part int) error {
+	credential, err := azblob.NewSharedKeyCredential(*storageAccountName, *storageAccountKey)
+	if err != nil {
+		return err
 	}
 
-	result := Job{
-		ID:                job.Name,
-		Active:            int(job.Status.Active),
-		Succeeded:         int(job.Status.Succeeded),
-		Failed:            int(job.Status.Failed),
-		StorageContainer:  job.ObjectMeta.Labels[StorageContainerLabelName],
-		StorageBlobPrefix: storageBlobPrefix,
-	}
+	p := azblob.NewPipeline(credential, azblob.PipelineOptions{})
 
-	result.RunningOnACI = len(job.ObjectMeta.Labels[scheduler.LabelNameVirtualKubelet]) > 0
+	// From the Azure portal, get your storage account blob service URL endpoint.
+	URL, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net/%s", *storageAccountName, blobContainerName))
 
-	if len(job.Status.Conditions) > 0 {
-		result.Status = string(job.Status.Conditions[0].Type)
+	// Create a ContainerURL object that wraps the container URL and a request
+	// pipeline to make requests.
+	containerURL := azblob.NewContainerURL(*URL, p)
+
+	var prefix string
+	if part > 0 {
+		prefix = fmt.Sprintf("%s/output_%d.", blobNamePrefix, part)
 	} else {
-		if result.Active > 0 || result.Succeeded > 0 || result.Failed > 0 {
-			result.Status = "Pending"
-		} else {
-			result.Status = "Not Started"
+		prefix = fmt.Sprintf("%s/output_", blobNamePrefix)
+	}
+
+	log.Debugf("Creating results from prefix %s", prefix)
+	listBlobsFlatSegment := azblob.ListBlobsSegmentOptions{
+		Prefix: prefix,
+	}
+
+	const BufferSize = 1024 * 1024 * 4 // 4 MB
+	buffer := make([]byte, BufferSize)
+
+	for marker := (azblob.Marker{}); marker.NotDone(); {
+		// Get a result segment starting with the blob indicated by the current Marker.
+		listBlob, err := containerURL.ListBlobsFlatSegment(ctx, marker, listBlobsFlatSegment)
+		if err != nil {
+			return err
 		}
 
+		// ListBlobs returns the start of the next segment; you MUST use this to get
+		// the next segment (after processing the current result segment).
+		marker = listBlob.NextMarker
+
+		log.Debugf("Found %d blobs to return", len(listBlob.Segment.BlobItems))
+
+		for _, blobItem := range listBlob.Segment.BlobItems {
+			log.Debugf("Writing %s to response", blobItem.Name)
+			err = streamBlobContentWithBuffer(ctx, w, containerURL.NewBlobURL(blobItem.Name), buffer)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
-	if job.Status.StartTime != nil {
-		t := job.Status.StartTime.UTC()
-		result.StartTime = &t
+	return nil
+}
+
+func streamBlobContentWithBuffer(ctx context.Context, w io.Writer, blobURL azblob.BlobURL, buffer []byte) error {
+	response, err := blobURL.Download(ctx, 0, azblob.CountToEnd, azblob.BlobAccessConditions{}, false)
+	if err != nil {
+		return err
 	}
 
-	if job.Status.CompletionTime != nil {
-		t := job.Status.CompletionTime.UTC()
-		result.CompletionTime = &t
+	retryReaderOptions := azblob.RetryReaderOptions{
+		MaxRetryRequests: 3,
 	}
 
-	if job.Spec.Parallelism != nil {
-		result.Parallelism = int(*job.Spec.Parallelism)
-	}
+	body := response.Body(retryReaderOptions)
+	defer body.Close()
 
-	if job.Spec.Completions != nil {
-		result.Completions = int(*job.Spec.Completions)
-	}
+	_, err = io.CopyBuffer(w, body, buffer)
 
-	return result
+	return err
 }

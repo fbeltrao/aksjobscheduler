@@ -1,6 +1,7 @@
 FROM golang:1.11.1 AS builder
 
 COPY ./scheduler $GOPATH/src/github.com/fbeltrao/aksjobscheduler/scheduler
+COPY ./schedulerapi $GOPATH/src/github.com/fbeltrao/aksjobscheduler/schedulerapi
 
 # Copy the code from the host and compile it
 WORKDIR $GOPATH/src/github.com/fbeltrao/aksjobscheduler/server

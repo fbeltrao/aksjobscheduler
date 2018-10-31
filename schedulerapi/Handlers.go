@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -17,7 +18,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 // createJobHandler produces a new job by splitting the uploaded file
 func createJobHandler(w http.ResponseWriter, r *http.Request) {
 
-	log.Printf("Received request to create job, content-size: %d, content-type is %s\n", r.ContentLength, r.Header.Get("Content-Type"))
+	log.Infof("Received request to create job, content-size: %d, content-type is %s", r.ContentLength, r.Header.Get("Content-Type"))
 
 	date := time.Now()
 	jobUniqueID := randomString()
@@ -48,7 +49,7 @@ func getJobHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	jobID, ok := vars["id"]
 	if !ok {
-		w.WriteHeader(400)
+		responseWithApplicationError(w, http.StatusBadRequest, "Missing job id")
 		return
 	}
 
@@ -65,11 +66,11 @@ func getJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(jobs.Items) == 0 {
-		w.WriteHeader(404)
+		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
 		return
 	}
 
-	jobStatus := createJob(jobs.Items[0])
+	jobStatus := NewJob(jobs.Items[0])
 
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(jobStatus)
@@ -97,7 +98,7 @@ func listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	result := make([]Job, 0)
 
 	for _, job := range allJobs.Items {
-		result = append(result, createJob(job))
+		result = append(result, NewJob(job))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -113,7 +114,7 @@ func deleteJobHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	jobID, ok := vars["id"]
 	if !ok {
-		w.WriteHeader(400)
+		responseWithApplicationError(w, http.StatusBadRequest, "Missing job id")
 		return
 	}
 
@@ -130,4 +131,60 @@ func deleteJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(202)
+}
+
+// getJobResultHandler returns the job result
+func getJobResultHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	jobID, ok := vars["id"]
+	if !ok {
+		responseWithApplicationError(w, http.StatusBadRequest, "Missing job id")
+		return
+	}
+
+	k8sScheduler, err := createScheduler()
+	if err != nil {
+		responseWithError(w, err)
+		return
+	}
+
+	jobs, err := k8sScheduler.SearchJobs(jobID, CreatedByLabelName, CreatedByLabelValue)
+	if err != nil {
+		responseWithError(w, err)
+		return
+	}
+
+	if len(jobs.Items) == 0 {
+		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
+		return
+	}
+
+	job := NewJob(jobs.Items[0])
+	if job.Completions != job.Succeeded {
+		responseWithApplicationError(w, http.StatusNotFound, fmt.Sprintf("Job has not yet completed: %d of %d completed", job.Succeeded, job.Completions))
+		return
+	}
+
+	part := 0
+	partQueryParam := r.URL.Query().Get("part")
+	if len(partQueryParam) > 0 {
+		part, err = strconv.Atoi(partQueryParam)
+		if err != nil {
+			part = 0
+		}
+	}
+
+	if part > job.Parts {
+		responseWithApplicationError(w, http.StatusBadRequest, fmt.Sprintf("Part has invalid value. Job has %d parts, requested for part %d", job.Parts, part))
+		return
+	}
+
+	// open files and stream back
+	w.WriteHeader(http.StatusOK)
+	w.Header().Add("Content-Type", "application/json")
+	err = writeAzureBlobs(r.Context(), w, job.StorageContainer, job.StorageBlobPrefix, part)
+	if err != nil {
+		responseWithError(w, err)
+		return
+	}
 }
