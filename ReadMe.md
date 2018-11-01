@@ -194,9 +194,9 @@ The job creation process is the following:
 
 ```text
 While (reads line from input file)
-  Add line to local buffer (~4 MB)
+  Add line to local buffer
   Whenever N lines were read, create a index file
-  Whenever local buffer is almost full write to blob
+  Whenever local buffer is almost full (~4 MB), write to blob
 End While
 
 Create Kubernetes job based on total_lines. Data returned from the Jobs API is retrieved from the Azure Storage or Kubernetes objects & metadata.
