@@ -186,8 +186,9 @@ Besides interacting with Azure Storage, the API schedules jobs in Kubernetes usi
 |Action|Description|
 |-|-|
 |POST /jobs|Receives a file upload, copy to az storage, create index files and starts K8s job|
-|GET /jobs/{id}|Retrieves detail of a job|
 |GET /jobs|Retrieves all jobs|
+|GET /jobs/{id}|Retrieves detail of a job|
+|GET /jobs/{id}/results|Retrieves result of a complete job. Use the query string `part` to download small parts|
 
 The job creation process is the following:
 
