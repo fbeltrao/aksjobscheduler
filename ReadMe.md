@@ -176,7 +176,7 @@ curl http://{location-of-jobs-api}/jobs/{job-id}
 6. Download the job result once finished in parts or as a single file (remove the `part` query string parameter)
 
 ```bash
-curl http://{location-of-jobs-api}/jobs/{job-id}/results?part=13
+curl http://{location-of-jobs-api}/jobs/{job-id}/results?part=13 --output results-part-13.json
 ```
 
 ### Jobs Web API
