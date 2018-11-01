@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobscheduler-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jobscheduler
+  template:
+    metadata:
+      labels:
+        app: jobscheduler
+        tier: web
+    spec:
+      serviceAccountName: aks-jobscheduler
+      containers:
+      - name: jobscheduler-web
+        image: fbeltrao/aksjobscheduler-server:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+          - name: STORAGEKEY
+            value: "<storage key>"
+          - name: STORAGEACCOUNT
+            value: "<storage account name>"
+          - name: EVENTGRIDSASKEY
+            value: "<optional event grid sas key to notify when job is done>"
+          - name: EVENTGRIDENDPOINT
+            value: "<optional event grid endpoint to notify when job is done>"
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: jobscheduler-web-svc
+spec:
+  selector:
+    app: jobscheduler
+    tier: web
+  ports:
+  - protocol: TCP    
+    port: 80
+    targetPort: 8000
+  type: LoadBalancer

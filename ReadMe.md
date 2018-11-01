@@ -138,17 +138,23 @@ Besides copying the input file to Azure Storage the Jobs API will create index f
 
 2. Deploy application to your AKS with the provided deployment.yaml file. Keep in mind that the deployment will create a new public IP since the service is of type LoadBalancer. Modify the deployment.yaml file to contain your storage credentials.
 
+If the target Kubernetes cluster has role based access control (RBAC), we need to give access permission to the batch job api. The file `rbac.yaml` will create the service account, role and role binding needed. Next deploy the application and service:
+
 ```bash
+# with rbac (has service account assignment on pod)
+kubectl apply -f deployment-rbac.yaml
+
+# without rbac
 kubectl apply -f deployment.yaml
 ```
 
-2. Watch the Jobs API logs
+3. Watch the Jobs API logs
 
 ```bash
 POD_NAME=$(kubectl get pods -l "app=jobscheduler" -o jsonpath='{.items[0].metadata.name}') && clear && kubectl logs $POD_NAME -f
 ```
 
-3. Create a new job by uploading an input file (modify the file path)
+4. Create a new job by uploading an input file (modify the file path)
 
 ```bash
 curl -X POST \
@@ -159,7 +165,7 @@ curl -X POST \
   -F file=@/path/to/sample_large_work.json
 ```
 
-4. Look at the job status
+5. Look at the job status
 
 ```bash
 curl http://{location-of-jobs-api}/jobs/{job-id}
@@ -167,7 +173,7 @@ curl http://{location-of-jobs-api}/jobs/{job-id}
 {"id":"2018-10-4610526630846599105","status":"Complete","startTime":"2018-10-31T12:31:52Z","completionTime":"2018-10-31T12:33:57Z","succeeded":13,"parallelism":4,"parts":13,"completions":13,"storageContainer":"jobs","storageBlobPrefix":"2018-10/4610526630846599105","runningOnAci":true}
 ```
 
-5. Download the job result once finished in parts or as a single file (remove the parts query string parameter)
+6. Download the job result once finished in parts or as a single file (remove the `part` query string parameter)
 
 ```bash
 curl http://{location-of-jobs-api}/jobs/{job-id}/results?part=13
