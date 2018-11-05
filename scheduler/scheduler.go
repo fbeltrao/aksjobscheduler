@@ -1,7 +1,7 @@
 package scheduler
 
 import (
-	"errors"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apiv1 "k8s.io/api/core/v1"
@@ -17,37 +17,9 @@ const LabelNameVirtualKubelet = "virtual-kubelet"
 
 // Scheduler facilitates the work with K8s jobs
 type Scheduler struct {
-	BackoffLimit        int32
-	ACISelectorHostName string
-	Namespace           string
-	clientset           *kubernetes.Clientset
-}
-
-// NewJobDetail defines properties for new job
-type NewJobDetail struct {
-	JobID       string
-	JobName     string
-	Labels      map[string]string
-	ImageName   string
-	Image       string
-	Parallelism int
-	Completions int
-	RequiresACI bool
-	Commands    []string
-	Memory      string
-	CPU         string
-	Env         []apiv1.EnvVar
-}
-
-// AddEnv adds an environment variable to the job detail
-func (n *NewJobDetail) AddEnv(name, value string) *NewJobDetail {
-	newVar := &apiv1.EnvVar{
-		Name:  name,
-		Value: value,
-	}
-
-	n.Env = append(n.Env, *newVar)
-	return n
+	BackoffLimit int32
+	Namespace    string
+	clientset    *kubernetes.Clientset
 }
 
 // NewScheduler creates a new Scheduler
@@ -100,6 +72,13 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 	parallelismInt32 := int32(jobDetail.Parallelism)
 	completionsInt32 := int32(jobDetail.Completions)
 
+	var imagePullSecrets []apiv1.LocalObjectReference
+	if len(jobDetail.ImagePullSecrets) > 0 {
+		imagePullSecrets = append(imagePullSecrets, apiv1.LocalObjectReference{
+			Name: jobDetail.ImagePullSecrets,
+		})
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobDetail.JobID,
@@ -126,7 +105,8 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 							},
 						},
 					},
-					RestartPolicy: apiv1.RestartPolicyOnFailure,
+					RestartPolicy:    apiv1.RestartPolicyOnFailure,
+					ImagePullSecrets: imagePullSecrets,
 				},
 			},
 		},
@@ -135,12 +115,15 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 	// need to run on ACI?
 	if jobDetail.RequiresACI {
 
-		if len(s.ACISelectorHostName) == 0 {
-			return nil, errors.New("value of ACISelectorHostName was not defined")
+		imageOS := "linux"
+		if len(jobDetail.ImageOS) > 0 {
+			imageOS = strings.ToLower(jobDetail.ImageOS)
 		}
 
 		job.Spec.Template.Spec.NodeSelector = map[string]string{
-			"kubernetes.io/hostname": s.ACISelectorHostName,
+			"beta.kubernetes.io/os": imageOS,
+			"kubernetes.io/role":    "agent",
+			"type":                  "virtual-kubelet",
 		}
 
 		job.Spec.Template.Spec.Tolerations = []apiv1.Toleration{

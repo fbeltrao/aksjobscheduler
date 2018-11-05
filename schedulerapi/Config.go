@@ -71,11 +71,14 @@ var (
 	// aciCompletionsTrigger defines the amount of completions necessary to execute the job using virtual kubelet
 	aciCompletionsTrigger = flag.Int("aciCompletionsTrigger", getEnvInt("ACICOMPLETIONSTRIGGER", 6), "Defines the amount of completions necessary to execute the job using virtual kubelet. Default is 6. 0 to disable ACI")
 
-	// aciSelectorHostName defines the ACI host name
-	aciSelectorHostName = flag.String("aciSelectorHostName", getEnvString("ACIHOSTNAME", "virtual-kubelet-virtual-kubelet-linux-westeurope"), "Defines the ACI host name ('virtual-kubelet-virtual-kubelet-linux-westeurope' by default)")
+	// jobImageOS defines the job image OS
+	jobImageOS = flag.String("jobImageOS", getEnvString("JOBIMAGEOS", "linux"), "Defines the job image OS (windows, linux). linux by default")
 
 	// jobImage defines the image identifier about the job
 	jobImage = flag.String("jobImage", getEnvString("JOBIMAGE", "fbeltrao/aksjobscheduler-worker-dotnet:1.0"), "Image to be used in job. Default (fbeltrao/aksjobscheduler-worker-dotnet:1.0)")
+
+	// JobImagePullSecret defines the image pull secret when using a private image repository
+	jobImagePullSecret = flag.String("jobImagePullSecret", getEnvString("JOBIMAGEPULLSECRET", ""), "Defines the image pull secret when using a private image repository")
 
 	// jobCPULimit defines the CPU limit for the job pod when running on local cluster
 	jobCPULimit = flag.String("jobCPULimit", getEnvString("JOBCPULIMIT", "0.5"), "Job CPU limit for local cluster (0.5 by default)")
@@ -113,10 +116,6 @@ func Initialize() error {
 	}
 	flag.Parse()
 
-	if len(*aciSelectorHostName) <= 0 {
-		return fmt.Errorf("aci host name has invalid value: %s", *aciSelectorHostName)
-	}
-
 	if len(*jobCPULimit) <= 0 {
 		return fmt.Errorf("job cpu limit has invalid value: %s", *jobCPULimit)
 	}
@@ -127,6 +126,10 @@ func Initialize() error {
 
 	if len(*jobImage) <= 0 {
 		return fmt.Errorf("job image has invalid value: %s", *jobImage)
+	}
+
+	if len(*jobImageOS) <= 0 {
+		return fmt.Errorf("job image OS has invalid value: %s", *jobImageOS)
 	}
 
 	if *maxParallelism <= 0 {
@@ -160,12 +163,13 @@ func Initialize() error {
 	log.Infof("ACI max parallelism: %d", *aciMaxParallelism)
 	log.Infof("Lines per job: %d", *linesPerJob)
 	log.Infof("Job image: %s", *jobImage)
+	log.Infof("Job image OS: %s", *jobImageOS)
+	log.Infof("Job image pull secret: %s", *jobImagePullSecret)
 	log.Infof("Job CPU limit: %s", *jobCPULimit)
 	log.Infof("Job memory limit: %s", *JobMemoryLimit)
 	log.Infof("ACI job CPU limit: %s", *aciJobCPULimit)
 	log.Infof("ACI job memory limit: %s", *aciJobMemoryLimit)
 	log.Infof("ACI file threshold: %d", *aciCompletionsTrigger)
-	log.Infof("ACI selector host name: %s", *aciSelectorHostName)
 	log.Infof("Job Finished Event Grid topic endpoint: %s", *jobFinishedEventGridTopicEndpoint)
 	log.Infof("Job Finished Event Grid sas key: %s", *jobFinishedEventGridSasKey)
 

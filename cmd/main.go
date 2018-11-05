@@ -45,7 +45,7 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	k8scheduler.ACIEnabled = *useAci
+	//k8scheduler.ACIEnabled = *useAci
 	k8scheduler.ACISelectorHostName = *aciSelectorHostName
 
 	for {

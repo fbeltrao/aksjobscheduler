@@ -19,40 +19,8 @@ import (
 )
 
 func createScheduler() (*scheduler.Scheduler, error) {
-	s, err := scheduler.NewScheduler(*kubeConfig)
-	if err == nil {
-		s.ACISelectorHostName = *aciSelectorHostName
-	}
-	return s, nil
+	return scheduler.NewScheduler(*kubeConfig)
 }
-
-/*
-// CreateJobHead produces a new job by creating the required kubernetes job
-func CreateJobHead(w http.ResponseWriter, r *http.Request) {
-	decoder := json.NewDecoder(r.Body)
-
-	var jobCreateRequest JobCreateRequest
-	if err := decoder.Decode(&jobCreateRequest); err != nil {
-		responseWithApplicationError(w, http.StatusBadRequest, "Invalid payload")
-		return
-	}
-
-	// verify the job size
-	inputFileCount, err := verifyJobInputFiles(r, jobCreateRequest.StorageContainer, jobCreateRequest.StorageBlobPrefix)
-	if err != nil {
-		responseWithError(w, err)
-		return
-	}
-	err = createJobFromInputFiles(jobCreateRequest.ID, jobCreateRequest.StorageContainer, jobCreateRequest.StorageBlobPrefix, inputFileCount)
-	if err != nil {
-		responseWithError(w, err)
-		return
-	}
-
-	w.WriteHeader(202)
-	w.Write([]byte(jobCreateRequest.ID))
-}
-*/
 
 func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesCount int) error {
 	k8sScheduler, err := createScheduler()
@@ -92,15 +60,17 @@ func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesC
 	log.Infof("Starting job %s, lines count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, linesCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
 
 	jobDetail := scheduler.NewJobDetail{
-		Completions: completions,
-		ImageName:   "jobimage",
-		Image:       *jobImage,
-		CPU:         cpuLimit,
-		Memory:      memoryLimit,
-		Parallelism: parallelism,
-		JobID:       jobID,
-		JobName:     jobID,
-		RequiresACI: requiresACI,
+		Completions:      completions,
+		ImageName:        "jobimage",
+		ImagePullSecrets: *jobImagePullSecret,
+		Image:            *jobImage,
+		ImageOS:          *jobImageOS,
+		CPU:              cpuLimit,
+		Memory:           memoryLimit,
+		Parallelism:      parallelism,
+		JobID:            jobID,
+		JobName:          jobID,
+		RequiresACI:      requiresACI,
 		Labels: map[string]string{
 			CreatedByLabelName:         CreatedByLabelValue,
 			StorageContainerLabelName:  containerName,

@@ -19,6 +19,8 @@ Company is using a Kubernetes cluster to host a few applications. Cluster resour
 
 A solution to this problem is to leverage Virtual Kubelet, scheduling jobs outside the cluster in case workload would starve available resources.
 
+In my experience, running the sample application using Azure Container Registry creating a new virtual kubelet, pulling image, running container and finalizing job takes between 35 to 60 seconds.
+
 ## Running containers in Virtual Kubelet in Azure
 
 [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kubelet) is an open source project allowing Kubernetes to schedule workloads outside of the reserved cluster nodes.
@@ -27,6 +29,26 @@ For more information refer to documentation:
 
 - [Azure Container Instance](https://docs.microsoft.com/en-us/azure/container-instances/container-instances-overview)
 - [Use Virtual Kubelet in Azure Kubernetes Service](https://docs.microsoft.com/en-us/azure/aks/virtual-kubelet)
+
+### Virtual Kubelet pulling private images from ACR
+
+According to the documentation it should be possible to set a service principal with access to ACR. However, it [does not seem to work](https://github.com/virtual-kubelet/virtual-kubelet/issues/192).
+You will see the following message on the job pod:
+
+```text
+Status:             Pending
+Reason:             ProviderFailed
+Message:            api call to https://management.azure.com/subscriptions/xxxxxx/resourceGroups/xxxxx/providers/Microsoft.ContainerInstance/containerGroups/xxxxxx?api-version=2018-09-01: got HTTP response status code 400 error code "InaccessibleImage": The image 'xxxxx.azurecr.io/aksjobscheduler-worker-dotnet:1.0' in container group 'xxxx' is not accessible. Please check the image and registry credential.
+```
+
+The workaround describe in the GitHub issue requires us to create a secret and pass it to the [pullImageSecrets](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/)
+Creating the secret is documented [here](https://docs.microsoft.com/en-us/azure/container-registry/container-registry-auth-aks#access-with-kubernetes-secret):
+
+```bash
+$ kubectl create secret docker-registry my-acr-auth --docker-server xxx.azurecr.io --docker-username "<service principal id>" --docker-password "<service principal password>" --docker-email "<email address>"
+```
+
+Additionally, deploy the Jobs API with the correct `JOBIMAGEPULLSECRET`
 
 ## Running jobs in Azure Container Instance
 
@@ -96,7 +118,9 @@ spec:
             memory: "1Gi"
       restartPolicy: Never
       nodeSelector:
-        kubernetes.io/hostname: virtual-kubelet-virtual-kubelet-linux-westeurope
+        beta.kubernetes.io/os: linux
+        kubernetes.io/role: agent
+        type: virtual-kubelet
       tolerations:
       - key: virtual-kubelet.io/provider
         operator: Equal
@@ -138,10 +162,10 @@ Besides copying the input file to Azure Storage the Jobs API will create index f
 
 2. Deploy application to your AKS with the provided deployment.yaml file. Keep in mind that the deployment will create a new public IP since the service is of type LoadBalancer. Modify the deployment.yaml file to contain your storage credentials.
 
-If the target Kubernetes cluster has role based access control (RBAC), we need to give access permission to the batch job api. The file `rbac.yaml` will create the service account, role and role binding needed. Next deploy the application and service:
+If the target Kubernetes cluster has role based access control (RBAC), we need to give access permission to the batch job api. The file `deployment-rbac` will create the service account, role and role binding needed before creating the deployment and service:
 
 ```bash
-# with rbac (has service account assignment on pod)
+# with rbac (service account assignment on pod)
 kubectl apply -f deployment-rbac.yaml
 
 # without rbac
@@ -217,6 +241,7 @@ The API can be configures using environment variables as detailed here:
 |ACICOMPLETIONSTRIGGER|Defines the amount of completions necessary to execute the job using virtual kubelet|Default is 6. 0 to disable ACI|
 |ACIHOSTNAME|Defines the ACI host name|virtual-kubelet-virtual-kubelet-linux-westeurope|
 |JOBIMAGE|Image to be used in job|fbeltrao/aksjobscheduler-worker-dotnet:1.0|
+|JOBIMAGEPULLSECRET|Defines the image pull secret when using a private image repository. Secret created from the command `kubectl create secret docker-registry ...`||
 |JOBCPULIMIT|Job CPU limit for local cluster|0.5|
 |ACIJOBCPULIMIT|Job CPU limit for ACI|1|
 |JOBMEMORYLIMIT|Job Memory limit for local cluster|256Mi|
@@ -263,3 +288,13 @@ There are two ways to identify when a job has finished:
 ```
 
 - By using Event Grid. If an event grid endpoint and sas keys was provided to the Jobs API an additional completion will be scheduled. The worker will send an event grid notification if no index files is found (all indexes were completed).
+
+## Improvements
+
+This is a list of things that should be improved:
+
+- Accessing ACR images from virtual kubelet ([GitHub issue](https://github.com/virtual-kubelet/virtual-kubelet/issues/192))
+- Worker job is responsible for sending event grid notifications. Should be the responsibility of the scheduler
+- Worker job should be able to process multiple files to decrease the time needed to create new pods
+- Review io reading from storage in job scheduler. I am new to golang, there might be better ways to implement it
+- Use proper dependency management in go project
