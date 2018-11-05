@@ -11,15 +11,24 @@ Jobs in Kubernetes can be classified in two:
 - [Cron Job](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/): run periodically based on defined schedule
 - [Run to Completion](https://kubernetes.io/docs/concepts/workloads/controllers/jobs-run-to-completion/): run N amount of times
 
-This repository contains a demo application that schedules `Run to Completion` jobs in a Kubernetes cluster taking advantage of Virtual Kubelet in order to preserved allocated resources.
+This repository contains a demo application that schedules `Run to Completion` jobs in a Kubernetes cluster taking advantage of Virtual Kubelet in order to preserved allocated resources. It has an option to integration with [Event Grid](https://docs.microsoft.com/en-us/azure/event-grid/overview) to notify once a job has been completed.
 
 ## Scenario
 
-Company is using a Kubernetes cluster to host a few applications. Cluster resource utilization is high and team wants to avoid oversizing. One of the teams has new requirement to run jobs with unpredicable loads. In high peaks, the required compute resources will exceed what is available in the cluster.
+Company is using a Kubernetes cluster to host a few applications. Cluster resource utilisation is high and team wants to avoid oversizing. One of the teams has new requirement to run jobs with unpredictable loads. In high peaks, the required compute resources will exceed what is available in the cluster.
 
 A solution to this problem is to leverage Virtual Kubelet, scheduling jobs outside the cluster in case workload would starve available resources.
 
-In my experience, running the sample application using Azure Container Registry creating a new virtual kubelet, pulling image, running container and finalizing job takes between 35 to 60 seconds.
+In my experience running the sample application using Virtual Kubelet had the following results:
+
+|Location|Image Repository|Min Duration|Max Duration|
+|-|-|-|-|
+|Cluster|doesn't matter (image caching)|7 secs|35 secs|
+|ACI|ACR|35 secs|60 secs|
+|ACI|Docker Hub|35 secs| 80 secs|
+
+**Disclaimer**\
+There are other options to run jobs in Azure (i.e. Azure Functions, Azure Batch, WebJobs). The option presented here might suit better a team that wishes to leverage containers and orchestrators experience.
 
 ## Running containers in Virtual Kubelet in Azure
 
@@ -68,14 +77,11 @@ spec:
       - name: pi
         image: perl
         command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
-        env:
-          - name: "linesPerJob"
-            value: 50
       restartPolicy: Never
   backoffLimit: 4
 ```
 
-Running the job in Kubernetes with kubectl is demostrated below:
+Running the job in Kubernetes with kubectl is demonstrated below:
 
 ```bash
 $ kubectl apply -f https://raw.githubusercontent.com/kubernetes/website/master/content/en/examples/controllers/job.yaml
@@ -98,7 +104,7 @@ POD_NAME=$(kubectl get pods -l "job-name=pi" -o jsonpath='{.items[0].metadata.na
 3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679821480865132823066470938446095505822317253594081284811174502841027019385 REMOVED-TO-SAVE-SPACE
 ```
 
-To run the same job using Virtual Kubelet add the pod affinity information as the yaml below (if your cluster is not in westeurope you need to change the value of "kubernetes.io/hostname"):
+To run the same job using Virtual Kubelet add the pod selection/affinity information as the yaml below:
 
 ```yaml
 apiVersion: batch/v1
@@ -133,10 +139,15 @@ spec:
 
 The code found in this repository has 2 components:
 
-- Jobs API (/server)
-- Job Worker (/workers/dotnet)
+- **Jobs API (/server)**\
+Web API to manage jobs. Executing of new jobs is redirect depending on the thresholds defined for local cluster workloads.\
+The implementation uses the Kubernetes API to schedule jobs. State is obtained from native kubernetes objects and metadata.\
+Job input file is copied to Azure Storage. Index files are created to enable parallelism in job execution.
 
-Starting a new job requires using the Jobs API. The POST request should upload a file like the example below:
+- **Job Worker (/workers/dotnet)**\
+Sample implementation of job worker.
+
+Starting a new job requires sending a file through the Jobs API. A post request to http://api-url/jobs with the input file (as upload file like the example below) creates a job:
 
 ```json
 { "id": "1", "value1": 3123, "value2": 321311, "op": "+" }
@@ -145,7 +156,7 @@ Starting a new job requires using the Jobs API. The POST request should upload a
 { "id": "4", "value1": 3123, "value2": 321311, "op": "*" }
 ```
 
-The result of the create job request is the jobID. The ultimate result calculated by workers is the following:
+The result of the create job request is the jobID. The outcome of a job performed by workers is the following:
 
 ```json
 {"id":"1","value1":3123.0,"value2":321311.0,"op":"+","result":324434.0}
@@ -154,13 +165,13 @@ The result of the create job request is the jobID. The ultimate result calculate
 {"id":"4","value1":3123.0,"value2":321311.0,"op":"*","result":1003454253.0}
 ```
 
-Besides copying the input file to Azure Storage the Jobs API will create index files that will identity where each N amount of lines start on the input file. Those small index files will be used by workers to [lease](https://docs.microsoft.com/en-us/rest/api/storageservices/lease-blob) a range of lines to be processed, preventing parallel workers from processing the same content.
+As mentioned before, the Jobs API will create index files that will identity where each N amount of lines start on the input file. Those small index files will be used by workers to [lease](https://docs.microsoft.com/en-us/rest/api/storageservices/lease-blob) a range of lines to be processed, preventing parallel workers from processing the same content.
 
 ## Running sample application in AKS
 
 1. Create a new storage account (the sample application will store input and output files there)
 
-2. Deploy application to your AKS with the provided deployment.yaml file. Keep in mind that the deployment will create a new public IP since the service is of type LoadBalancer. Modify the deployment.yaml file to contain your storage credentials.
+2. Deploy application to your AKS with the provided yaml file. Keep in mind that the deployment will create a new public IP since the service is of type LoadBalancer. Modify the deployment yaml file to contain your storage credentials.
 
 If the target Kubernetes cluster has role based access control (RBAC), we need to give access permission to the batch job api. The file `deployment-rbac` will create the service account, role and role binding needed before creating the deployment and service:
 
