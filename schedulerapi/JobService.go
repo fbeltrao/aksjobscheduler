@@ -1,8 +1,6 @@
 package schedulerapi
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,36 +9,151 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/Azure/azure-pipeline-go/pipeline"
 	azblob "github.com/Azure/azure-storage-blob-go/azblob"
+	"github.com/Microsoft/ApplicationInsights-Go/appinsights"
 	scheduler "github.com/fbeltrao/aksjobscheduler/scheduler"
 	errors "github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	batchv1 "k8s.io/api/batch/v1"
 )
 
 func createScheduler() (*scheduler.Scheduler, error) {
 	return scheduler.NewScheduler(*kubeConfig)
 }
 
-func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesCount int) error {
+func getWatcherJobID(jobID string) string {
+	return jobID + "-watcher"
+}
+
+func createWatcherKubernetesJob(k8sScheduler *scheduler.Scheduler, jobID, containerName, blobNamePrefix string, runFinalizerInACI bool) (*batchv1.Job, error) {
+	if len(*jobWatcherImage) > 0 && len(*jobFinalizerImage) > 0 {
+
+		watcherJobID := getWatcherJobID(jobID)
+		jobDetail := scheduler.NewJobDetail{
+			Completions:        1,
+			ImageName:          "watcherimage",
+			ImagePullSecrets:   *jobImagePullSecret,
+			Image:              *jobWatcherImage,
+			CPU:                *jobWatcherCPULimit,
+			Memory:             *jobWatcherMemoryLimit,
+			ServiceAccountName: *jobWatcherServiceAccountName,
+			Parallelism:        1,
+			JobID:              watcherJobID,
+			JobName:            watcherJobID,
+			RequiresACI:        false,
+			Labels: map[string]string{
+				JobCorrelationIDLabelName:  jobID,
+				"watcher":                  "1",
+				CreatedByLabelName:         CreatedByLabelValue,
+				StorageContainerLabelName:  containerName,
+				StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
+			},
+		}
+
+		jobDetail.AddEnv("JOBIMAGE", *jobFinalizerImage)
+		jobDetail.AddEnv("JOBCPULIMIT", *jobFinalizerCPULimit)
+		jobDetail.AddEnv("JOBMEMORYLIMIT", *jobFinalizerMemoryLimit)
+		jobDetail.AddEnv("JOBIMAGEPULLSECRET", *jobImagePullSecret)
+		jobDetail.AddEnv("RUNINACI", strconv.FormatBool(runFinalizerInACI))
+
+		jobDetail.AddEnv(JobStorageAccountNameEnvVarName, *storageAccountName)
+		jobDetail.AddEnv(JobStorageAccountKeyEnvVarName, *storageAccountKey)
+		jobDetail.AddEnv(JobBlobPrefixEnvVarName, blobNamePrefix)
+		jobDetail.AddEnv(JobStorageContainerEnvVarName, containerName)
+		jobDetail.AddEnv(JobItemsPerJobEnvVarName, strconv.Itoa(*itemsPerJob))
+		jobDetail.AddEnv(JobIDEnvVarName, jobID)
+		jobDetail.AddEnv(JobNameEnvVarName, jobID)
+
+		if jobFinishedEventGridSasKey != nil {
+			jobDetail.AddEnv(JobEventGridSasKeyEnvVarName, *jobFinishedEventGridSasKey)
+		}
+
+		if jobFinishedEventGridTopicEndpoint != nil {
+			jobDetail.AddEnv(JobEventGridTopicEndpointEnvVarName, *jobFinishedEventGridTopicEndpoint)
+		}
+
+		watcherJob, err := k8sScheduler.NewJob(&jobDetail)
+		if watcherJob != nil {
+			log.Infof("Started watcher job %s, requiresACI: %t, cpu limit: %s, memory limit: %s, finalizer image: %s", watcherJobID, runFinalizerInACI, *jobWatcherCPULimit, *jobWatcherMemoryLimit, *jobFinalizerImage)
+		}
+
+		return watcherJob, err
+	}
+	return nil, nil
+}
+
+func createBatchJob(jobID, containerName, blobNamePrefix string, itemsCount int) (*batchv1.Job, error) {
 	k8sScheduler, err := createScheduler()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parts := int(math.Ceil(float64(linesCount) / float64(*linesPerJob)))
-	completions := parts // completions might be increase to accomodate finished notification
+	completions := int(math.Ceil(float64(itemsCount) / float64(*itemsPerJob)))
+
+	if appInsightsClient != nil {
+		event := appinsights.NewEventTelemetry("newJob")
+		event.Properties["jobID"] = jobID
+		event.Properties["storageContainer"] = containerName
+		event.Properties["storagePrefix"] = blobNamePrefix
+		event.Properties["image"] = *jobImage
+		event.Measurements["items"] = float64(itemsCount)
+		event.Properties["cpu"] = *batchCPULimit
+		event.Properties["mem"] = *batchMemoryLimit
+		event.Properties["aggregatorImage"] = *jobFinalizerImage
+
+		appInsightsClient.Track(event)
+	}
+	log.Infof("Starting batch job %s, jobs count: %d, completions: %d, cpu: %s, memory: %s", jobID, itemsCount, completions, *batchCPULimit, *batchMemoryLimit)
+
+	jobDetail := scheduler.NewJobDetail{
+		Completions:      1,
+		Parallelism:      1,
+		ImageName:        "batchimage",
+		ImagePullSecrets: *jobImagePullSecret,
+		Image:            *batchImage,
+		CPU:              *batchCPULimit,
+		Memory:           *batchMemoryLimit,
+
+		JobID:   jobID,
+		JobName: jobID,
+		Labels: map[string]string{
+			JobCorrelationIDLabelName:  jobID,
+			CreatedByLabelName:         CreatedByLabelValue,
+			StorageContainerLabelName:  containerName,
+			StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
+			PartsLabelName:             strconv.Itoa(completions),
+		},
+	}
+
+	jobDetail.AddEnv(JobIDEnvVarName, jobID)
+	jobDetail.AddEnv("POOLID", *batchPoolID)
+	jobDetail.AddEnv("IMAGENAME", *jobImage)
+	jobDetail.AddEnv("COMPLETIONS", strconv.Itoa(completions))
+	jobDetail.AddEnv("BATCHNAME", *batchName)
+	jobDetail.AddEnv("BATCHCONNSTR", *batchConnectionString)
+	jobDetail.AddEnv("BATCHPW", *batchPassword)
+	jobDetail.AddEnv("AGGIMAGENAME", *jobFinalizerImage)
+
+	jobDetail.AddEnv(JobStorageContainerEnvVarName, containerName)
+	jobDetail.AddEnv(JobStorageAccountNameEnvVarName, *storageAccountName)
+	jobDetail.AddEnv(JobStorageAccountKeyEnvVarName, *storageAccountKey)
+	jobDetail.AddEnv(JobBlobPrefixEnvVarName, blobNamePrefix)
+
+	return k8sScheduler.NewJob(&jobDetail)
+}
+
+func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsCount int) (*batchv1.Job, error) {
+
+	k8sScheduler, err := createScheduler()
+	if err != nil {
+		return nil, err
+	}
+
+	completions := int(math.Ceil(float64(locationsCount) / float64(*itemsPerJob)))
 	requiresACI := *aciCompletionsTrigger > 0 && completions >= *aciCompletionsTrigger
 	parallelism := *maxParallelism
 	cpuLimit := *jobCPULimit
 	memoryLimit := *JobMemoryLimit
-
-	finishedNotificationEnabled := len(*jobFinishedEventGridTopicEndpoint) > 0 && len(*jobFinishedEventGridSasKey) > 0
-
-	if finishedNotificationEnabled {
-		// add another completion to send the notification
-		completions++
-	}
 
 	if requiresACI {
 		parallelism = *aciMaxParallelism
@@ -52,90 +165,55 @@ func createJobFromInputLines(jobID, containerName, blobNamePrefix string, linesC
 		parallelism = completions
 	}
 
-	// do not parallelize all if the last job will wait
-	if finishedNotificationEnabled && parallelism == completions {
-		parallelism--
+	watcherJob, err := createWatcherKubernetesJob(k8sScheduler, jobID, containerName, blobNamePrefix, requiresACI)
+	if err != nil {
+		return nil, err
 	}
 
-	log.Infof("Starting job %s, lines count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, linesCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
+	log.Infof("Starting job %s, jobs count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, locationsCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
 
 	jobDetail := scheduler.NewJobDetail{
 		Completions:      completions,
+		Parallelism:      parallelism,
 		ImageName:        "jobimage",
 		ImagePullSecrets: *jobImagePullSecret,
 		Image:            *jobImage,
 		ImageOS:          *jobImageOS,
 		CPU:              cpuLimit,
 		Memory:           memoryLimit,
-		Parallelism:      parallelism,
-		JobID:            jobID,
-		JobName:          jobID,
-		RequiresACI:      requiresACI,
+
+		JobID:       jobID,
+		JobName:     jobID,
+		RequiresACI: requiresACI,
 		Labels: map[string]string{
+			JobCorrelationIDLabelName:  jobID,
 			CreatedByLabelName:         CreatedByLabelValue,
 			StorageContainerLabelName:  containerName,
 			StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
-			PartsLabelName:             strconv.Itoa(parts),
+			JobHasWatcherLabelName:     strconv.FormatBool(watcherJob != nil),
 		},
 	}
 
 	jobDetail.AddEnv(JobStorageContainerEnvVarName, containerName)
-	jobDetail.AddEnv(JobStorageConnectionStringEnvVarName, fmt.Sprintf("DefaultEndpointsProtocol=https;AccountName=%s;AccountKey=%s;EndpointSuffix=core.windows.net", *storageAccountName, *storageAccountKey))
+	jobDetail.AddEnv(JobStorageAccountNameEnvVarName, *storageAccountName)
+	jobDetail.AddEnv(JobStorageAccountKeyEnvVarName, *storageAccountKey)
 	jobDetail.AddEnv(JobBlobPrefixEnvVarName, blobNamePrefix)
-	jobDetail.AddEnv(JobLinesPerJobEnvVarName, strconv.Itoa(*linesPerJob))
+	jobDetail.AddEnv(JobItemsPerJobEnvVarName, strconv.Itoa(*itemsPerJob))
 	jobDetail.AddEnv(JobIDEnvVarName, jobID)
 
-	if finishedNotificationEnabled {
-		jobDetail.AddEnv(JobEventGridTopicEndpointEnvVarName, *jobFinishedEventGridTopicEndpoint)
-		jobDetail.AddEnv(JobEventGridSasKeyEnvVarName, *jobFinishedEventGridSasKey)
-	}
-
-	_, err = k8sScheduler.NewJob(&jobDetail)
-
-	return err
-}
-
-func verifyJobInputFiles(r *http.Request, blobContainerName, jobNamePrefix string) (int, error) {
-
-	inputFileCount := 0
-
-	credential, err := azblob.NewSharedKeyCredential(*storageAccountName, *storageAccountKey)
+	k8sJob, err := k8sScheduler.NewJob(&jobDetail)
 	if err != nil {
-		return inputFileCount, err
-	}
-
-	p := azblob.NewPipeline(credential, azblob.PipelineOptions{})
-
-	// From the Azure portal, get your storage account blob service URL endpoint.
-	URL, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net/%s", *storageAccountName, blobContainerName))
-
-	// Create a ContainerURL object that wraps the container URL and a request
-	// pipeline to make requests.
-	containerURL := azblob.NewContainerURL(*URL, p)
-
-	listBlobsFlatSegment := azblob.ListBlobsSegmentOptions{
-		Prefix: jobNamePrefix,
-	}
-
-	for marker := (azblob.Marker{}); marker.NotDone(); {
-		// Get a result segment starting with the blob indicated by the current Marker.
-		listBlob, err := containerURL.ListBlobsFlatSegment(r.Context(), marker, listBlobsFlatSegment)
-		if err != nil {
-			return 0, err
+		if watcherJob != nil {
+			log.Infof("Worker job failed, deleting watcher job %s", watcherJob.GetName())
+			k8sScheduler.DeleteJob(watcherJob.GetName())
 		}
-
-		// ListBlobs returns the start of the next segment; you MUST use this to get
-		// the next segment (after processing the current result segment).
-		marker = listBlob.NextMarker
-
-		inputFileCount += len(listBlob.Segment.BlobItems)
 	}
 
-	return inputFileCount, nil
+	return k8sJob, err
 }
 
-// CreateJobInputFile creates the input file in blob storage, returning the amount of lines
-func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string) (int, error) {
+// createJobInputFiles creates the input file in blob storage, returning the amount of lines
+func createJobInputFiles(r *http.Request, blobContainerName, jobNamePrefix string, splitter InputSplitter) (int, error) {
 
 	log.Debugf("Starting job input file creation. container: %s, prefix: %s", blobContainerName, jobNamePrefix)
 
@@ -156,19 +234,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 		return 0, err
 	}
 
-	// logOptions := pipeline.LogOptions{
-	// 	Log: func(level pipeline.LogLevel, message string) {
-	// 		log.Printf("[level: %d] %s\n", level, message)
-	// 	},
-	// 	ShouldLog: func(level pipeline.LogLevel) bool {
-	// 		return true
-	// 	},
-	// }
-	logOptions := pipeline.LogOptions{}
-
-	p := azblob.NewPipeline(credential, azblob.PipelineOptions{
-		Log: logOptions,
-	})
+	p := azblob.NewPipeline(credential, azblob.PipelineOptions{})
 
 	// From the Azure portal, get your storage account blob service URL endpoint.
 	URL, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net/%s", *storageAccountName, blobContainerName))
@@ -187,139 +253,7 @@ func createJobInputFile(r *http.Request, blobContainerName, jobNamePrefix string
 		}
 	}
 
-	targetBlobName := fmt.Sprintf("%s/input.json", jobNamePrefix)
-
-	appendBlobURL := containerURL.NewAppendBlobURL(targetBlobName)
-	log.Infof("Copying uploaded file to %s", targetBlobName)
-
-	bufferContentSize := 0
-
-	buffer := &bytes.Buffer{}
-	totalLines := 0
-	currentJobIndex := 1
-	currentJobLines := 0
-	lastJobByteIndex := 0
-	currentByteIndex := 0
-	blobCreated := false
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-
-		lineAsByte := scanner.Bytes()
-
-		currentByteIndex += len(lineAsByte)
-		totalLines++
-		currentJobLines++
-
-		_, err = buffer.Write(lineAsByte)
-		if err != nil {
-			return 0, err
-		}
-
-		newLineSize, err := buffer.WriteRune('\n')
-		if err != nil {
-			return 0, err
-		}
-		currentByteIndex += newLineSize
-
-		// create new control file
-		if currentJobLines == *linesPerJob {
-			controlBlobName := fmt.Sprintf("%s/ctrl_input_%d_%d", jobNamePrefix, currentJobIndex, lastJobByteIndex)
-			controlBlobURL := containerURL.NewAppendBlobURL(controlBlobName)
-
-			log.Infof("Creating control blob %s", controlBlobName)
-			controlBlobURL.Create(r.Context(),
-				azblob.BlobHTTPHeaders{},
-				azblob.Metadata{
-					"control": strconv.Itoa(currentJobIndex),
-				},
-				azblob.BlobAccessConditions{})
-
-			if err != nil {
-				return 0, err
-			}
-
-			lastJobByteIndex = currentByteIndex
-			currentJobIndex++
-			currentJobLines = 0
-		}
-
-		bufferContentSize += len(lineAsByte) + newLineSize
-
-		if bufferContentSize >= BufferSizeWriteLimit {
-			if !blobCreated {
-				_, err := appendBlobURL.Create(
-					r.Context(),
-					azblob.BlobHTTPHeaders{
-						ContentType: "application/json",
-					},
-					azblob.Metadata{},
-					azblob.BlobAccessConditions{},
-				)
-				if err != nil {
-					return 0, err
-				}
-				blobCreated = true
-			}
-			bytesToWrite := buffer.Bytes()
-			log.Debugf("Appending %d bytes to %s", len(bytesToWrite), targetBlobName)
-			_, err := appendBlobURL.AppendBlock(r.Context(), bytes.NewReader(bytesToWrite), azblob.AppendBlobAccessConditions{}, nil)
-
-			if err != nil {
-				return 0, err
-			}
-
-			bufferContentSize = 0
-			buffer.Reset()
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-
-	if bufferContentSize > 0 {
-		if !blobCreated {
-			_, err := appendBlobURL.Create(
-				r.Context(),
-				azblob.BlobHTTPHeaders{
-					ContentType: "application/json",
-				},
-				azblob.Metadata{},
-				azblob.BlobAccessConditions{},
-			)
-			if err != nil {
-				return 0, err
-			}
-			blobCreated = true
-		}
-		bytesToWrite := buffer.Bytes()
-		log.Debugf("Appending %d bytes to %s", len(bytesToWrite), targetBlobName)
-		_, err := appendBlobURL.AppendBlock(r.Context(), bytes.NewReader(bytesToWrite), azblob.AppendBlobAccessConditions{}, nil)
-
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	if currentJobLines > 0 {
-		controlBlobName := fmt.Sprintf("%s/ctrl_input_%d_%d", jobNamePrefix, currentJobIndex, lastJobByteIndex)
-		controlBlobURL := containerURL.NewAppendBlobURL(controlBlobName)
-
-		log.Infof("Creating control blob %s", controlBlobName)
-		_, err = controlBlobURL.Create(r.Context(),
-			azblob.BlobHTTPHeaders{},
-			azblob.Metadata{
-				"control": strconv.Itoa(currentJobIndex),
-			},
-			azblob.BlobAccessConditions{})
-
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	return totalLines, nil
+	return splitter.Split(r.Context(), file, containerURL, jobNamePrefix)
 }
 
 func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNamePrefix string, part int) error {
@@ -341,7 +275,7 @@ func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNa
 	if part > 0 {
 		prefix = fmt.Sprintf("%s/output_%d.", blobNamePrefix, part)
 	} else {
-		prefix = fmt.Sprintf("%s/output_", blobNamePrefix)
+		prefix = fmt.Sprintf("%s/output.json", blobNamePrefix)
 	}
 
 	log.Debugf("Creating results from prefix %s", prefix)

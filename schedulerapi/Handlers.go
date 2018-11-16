@@ -12,32 +12,48 @@ import (
 )
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Job Scheduler API")
+	fmt.Fprintf(w, "Job Scheduler API v1.1")
 }
 
 // createJobHandler produces a new job by splitting the uploaded file
 func createJobHandler(w http.ResponseWriter, r *http.Request) {
 
-	log.Infof("Received request to create job, content-size: %d, content-type is %s", r.ContentLength, r.Header.Get("Content-Type"))
+	batchFlag := r.URL.Query().Get("batch")
+	useBatch := len(batchFlag) > 0 && batchFlag == "1"
+
+	log.Infof("Received request to create job, content-size: %d, content-type is %s, use batch: %s", r.ContentLength, r.Header.Get("Content-Type"), strconv.FormatBool(useBatch))
 
 	date := time.Now()
 	jobUniqueID := randomString()
 	jobID := fmt.Sprintf("%s-%s", date.Format("2006-01"), jobUniqueID)
 	blobNamePrefix := fmt.Sprintf("%s/%s", date.Format("2006-01"), jobUniqueID)
 
-	linesCount, err := createJobInputFile(r, *containerName, blobNamePrefix)
+	locationsCount, err := createJobInputFiles(r, *containerName, blobNamePrefix, NewInputSplitterByLine(*itemsPerJob))
 	if err != nil {
 		responseWithError(w, err)
 		return
 	}
 
 	// start job based on input and amount of files created
-	log.Printf("Finished creating file, found %d lines", linesCount)
+	log.Printf("Finished creating file, found %d locations", locationsCount)
 
-	err = createJobFromInputLines(jobID, *containerName, blobNamePrefix, linesCount)
-	if err != nil {
-		responseWithError(w, err)
+	if locationsCount < 1 {
+		responseWithApplicationError(w, http.StatusBadRequest, "Input file generated 0 jobs")
 		return
+	}
+
+	if useBatch {
+		_, err = createBatchJob(jobID, *containerName, blobNamePrefix, locationsCount)
+		if err != nil {
+			responseWithError(w, err)
+			return
+		}
+	} else {
+		_, err = createKubernetesJob(jobID, *containerName, blobNamePrefix, locationsCount)
+		if err != nil {
+			responseWithError(w, err)
+			return
+		}
 	}
 
 	w.WriteHeader(202)
@@ -70,7 +86,25 @@ func getJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobStatus := NewJob(jobs.Items[0])
+	mainJob := jobs.Items[0]
+
+	// jobHasWatcher, _ := strconv.ParseBool(mainJob.Labels[JobHasWatcherLabelName])
+
+	// var watcherJob batchv1.Job
+	// if jobHasWatcher {
+	// 	watcherJobs, err := k8sScheduler.SearchJobs(getWatcherJobID(mainJob.GetName()), CreatedByLabelName, CreatedByLabelValue)
+
+	// 	if err != nil {
+	// 		responseWithError(w, err)
+	// 		return
+	// 	}
+
+	// 	if len(watcherJobs.Items) > 0 {
+	// 		watcherJob = watcherJobs.Items[0]
+	// 	}
+	// }
+
+	jobStatus := NewJob(mainJob)
 
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(jobStatus)
