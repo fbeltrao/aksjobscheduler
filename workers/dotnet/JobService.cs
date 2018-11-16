@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Auth;
 using Microsoft.WindowsAzure.Storage.Blob;
 using Newtonsoft.Json;
 
@@ -27,37 +28,40 @@ namespace Worker
         const int RENEW_LEASE_INTERVAL_IN_SECONDS = 15;
         
         private readonly IConfiguration configuration;
-        private readonly IJobFinishedNotifier jobFinishedNotifier;
         private readonly ILogger logger;
         private readonly string containerName;
         private readonly string blobPrefix;
-        private readonly int linesPerJob;
+        private readonly int itemsPerJob;
         private readonly string jobId;
+        private readonly string storageAccountName;
+        private readonly string storageAccountKey;
         private CloudStorageAccount cloudStorageAccount;
         private CloudBlob ctrlCloudBlob;
         private string leaseId;
 
-        CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
         private Task workerTask;
         private Task renewTask;
 
-        public JobService(IConfiguration configuration, IJobFinishedNotifier jobFinishedNotifier, ILogger<JobService> logger)
+        public JobService(IConfiguration configuration, ILogger<JobService> logger)
         {            
             this.configuration = configuration;
-            this.jobFinishedNotifier = jobFinishedNotifier;
             this.logger = logger;
-            this.containerName = configuration.GetValue<string>("STORAGECONTAINER");
+            this.containerName = configuration.GetValue<string>("CONTAINER");
             if (string.IsNullOrEmpty(this.containerName))
                 throw new Exception("Container name configuration not found");            
 
             this.blobPrefix = configuration.GetValue<string>("BLOBPREFIX");
-            this.linesPerJob = configuration.GetValue<int>("LINESPERJOB");
+            this.itemsPerJob = configuration.GetValue<int>("ITEMSPERJOB");
             this.jobId = configuration.GetValue<string>("JOBID");
+            this.storageAccountName = configuration.GetValue<string>("STORAGEACCOUNT");
+            this.storageAccountKey = configuration.GetValue<string>("STORAGEKEY");            
 
             this.logger.LogInformation("Job Id: {jobId}", this.jobId);
             this.logger.LogInformation("Container name: {containerName}", this.containerName);
             this.logger.LogInformation("Blob prefix: {blobPrefix}", this.blobPrefix);
-            this.logger.LogInformation("Lines per job: {linesPerJob}", this.linesPerJob);
+            this.logger.LogInformation("Lines per job: {itemsPerJob}", this.itemsPerJob);
+            this.logger.LogInformation("Storage account: {storageAccountName}", this.storageAccountName);
+            this.logger.LogDebug("Storage account key: {storageAccountKey}", this.storageAccountKey);
             
         }
 
@@ -108,22 +112,22 @@ namespace Worker
         {
             try
             {
-                var connectionString = configuration.GetValue<string>("STORAGECONNECTIONSTRING");
-                if (string.IsNullOrEmpty(connectionString))
-                    throw new Exception("Storage connection string configuration not found");
+                if (string.IsNullOrEmpty(this.storageAccountName))
+                    throw new Exception("Storage account name configuration not found");
 
-                this.logger.LogDebug($"Storage connection string: {connectionString}");
+                if (string.IsNullOrEmpty(this.storageAccountKey))
+                    throw new Exception("Storage account key configuration not found");
 
                 try
                 {
-                    this.cloudStorageAccount = CloudStorageAccount.Parse(connectionString);
+                    this.cloudStorageAccount = CloudStorageAccount.Parse($"DefaultEndpointsProtocol=https;AccountName={this.storageAccountName};AccountKey={this.storageAccountKey};EndpointSuffix=core.windows.net");
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception("Failed to create storage account", ex);
+                    throw new Exception("Failed to open storage account", ex);
                 }                
 
-                this.workerTask = Task.Run(() => DoWork());                           
+                this.workerTask = Task.Run(() => DoWork(cancellationToken));                           
             }
             catch (Exception ex)
             {
@@ -133,7 +137,7 @@ namespace Worker
             return Task.FromResult(0);
         }
 
-        private async Task DoWork()
+        private async Task DoWork(CancellationToken cancellationToken)
         {
             const int MAX_LEASE_ATTEMPTS = 3;
 
@@ -164,6 +168,7 @@ namespace Worker
 
                 if (findLeaseResult == FindAndLeaseInputBlobResultType.LeaseFailed)
                 {
+                    this.logger.LogCritical("Could not lease any blob, stopping");
                     Environment.ExitCode = 1; 
                     Program.Shutdown.Cancel();
                     return;
@@ -171,39 +176,32 @@ namespace Worker
 
                 if (findLeaseResult == FindAndLeaseInputBlobResultType.NoFilesFound)
                 {
-                    await NotifyJobFinished();                    
+                    this.logger.LogInformation("No blob was found!");
                 }
                 else
                 {
                     // 2. Start lease renew thread
-                    this.renewTask = Task.Run(() => this.RenewLease());
+                    var stopRenewCancellationToken = new CancellationTokenSource();
+                    var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopRenewCancellationToken.Token);
+                    this.renewTask = Task.Run(() => this.RenewLease(cancellationTokenSource.Token));
 
                     // 3. Process file
-                    await this.ProcessFile();
+                    await this.ProcessFile(cancellationToken);
 
-                    if (!this.cancellationTokenSource.IsCancellationRequested)
+                    if (!cancellationToken.IsCancellationRequested)
                     {
-                        // 4. Delete input file
-                        // adquire lease once more
-                        await this.ctrlCloudBlob.RenewLeaseAsync(AccessCondition.GenerateLeaseCondition(this.leaseId));
-                            
-                        // stop the renew process
-                        this.cancellationTokenSource.Cancel();
+                        // 4. Delete input file 
+
+                        // first: stops the renew task
+                        stopRenewCancellationToken.Cancel();
                         await this.renewTask;
-                            
-                        // Now delete it
-                        var blobName = this.ctrlCloudBlob.Name;
-                        await this.ctrlCloudBlob.DeleteAsync(
-                            DeleteSnapshotsOption.None, 
-                            AccessCondition.GenerateLeaseCondition(this.leaseId),
-                            new BlobRequestOptions(),
-                            null);   
+                        
+                        await DeleteInputFile();
 
-                        this.logger.LogInformation("Control blob '{blob}' deleted", blobName);
-
-                        this.logger.LogInformation("Finished");               
+                        this.logger.LogInformation("Finished succesfully");   
                     }
                 }
+                    
             }
             catch (Exception ex)
             {
@@ -215,23 +213,33 @@ namespace Worker
             Program.Shutdown.Cancel();
         }
 
-        private async Task NotifyJobFinished()
+        async Task DeleteInputFile()
         {
-            await this.jobFinishedNotifier.Notify(this.jobId, this.containerName, this.blobPrefix, this.cloudStorageAccount.Credentials.AccountName);
+            // adquire lease once more
+            await this.ctrlCloudBlob.RenewLeaseAsync(AccessCondition.GenerateLeaseCondition(this.leaseId));                                    
+                
+            // Now delete it
+            var blobName = this.ctrlCloudBlob.Name;
+            await this.ctrlCloudBlob.DeleteAsync(
+                DeleteSnapshotsOption.None, 
+                AccessCondition.GenerateLeaseCondition(this.leaseId),
+                new BlobRequestOptions(),
+                null);   
+
+            this.logger.LogInformation("Control blob '{blob}' deleted", blobName);
         }
 
 
-
         // Keeps the lease on the blob file as long as the cancellation token is not cancelled
-        async Task RenewLease()
+        async Task RenewLease(CancellationToken cancellationToken)
         {
             try
             {
-                while (!this.cancellationTokenSource.IsCancellationRequested)
+                while (!cancellationToken.IsCancellationRequested)
                 {
                     await this.ctrlCloudBlob.RenewLeaseAsync(AccessCondition.GenerateLeaseCondition(this.leaseId));
 
-                    await Task.Delay(TimeSpan.FromSeconds(RENEW_LEASE_INTERVAL_IN_SECONDS), this.cancellationTokenSource.Token);
+                    await Task.Delay(TimeSpan.FromSeconds(RENEW_LEASE_INTERVAL_IN_SECONDS), cancellationToken);
 
                     this.logger.LogInformation("Lease {leaseId} in {blob} renewed", this.leaseId, this.ctrlCloudBlob.Name);
                 }
@@ -247,7 +255,7 @@ namespace Worker
             this.logger.LogInformation("Exiting renew lease");
         }
 
-        async Task ProcessFile()
+        async Task ProcessFile(CancellationToken cancellationToken)
         {
             // Create output blob
             const int MIN_WRITE_BLOCK_SIZE = 1024 * 1024 * 50; // 50 MB
@@ -286,8 +294,8 @@ namespace Worker
                 using (var reader = new StreamReader(blobStream))
                 {                                        
                     while ( !reader.EndOfStream && 
-                            !this.cancellationTokenSource.IsCancellationRequested && 
-                            linesRead < this.linesPerJob)
+                            !cancellationToken.IsCancellationRequested && 
+                            linesRead < this.itemsPerJob)
                     {
                         var line = await reader.ReadLineAsync();
                         ++linesRead;
@@ -334,7 +342,6 @@ namespace Worker
     
         public async Task StopAsync(CancellationToken cancellationToken)
         {
-            this.cancellationTokenSource.Cancel();
             var tasksToWait = this.renewTask == null ? new Task[] { this.workerTask } : new Task[] { this.renewTask, this.workerTask };
             await Task.WhenAll(tasksToWait);
         }

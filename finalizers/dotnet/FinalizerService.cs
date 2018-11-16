@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -21,45 +22,52 @@ namespace Finalizer
         private readonly string containerName;
         private readonly string blobPrefix;
         private readonly string jobId;
+        private readonly string storageAccountName;
+        private readonly string storageAccountKey;
         private CloudStorageAccount cloudStorageAccount;
      
-        private Task workerTask;
+          private Task workerTask;
      
         public FinalizerService(IConfiguration configuration, ILogger<FinalizerService> logger)
         {            
             this.configuration = configuration;
             this.logger = logger;
-            this.containerName = configuration.GetValue<string>("STORAGECONTAINER");
+            this.containerName = configuration.GetValue<string>("CONTAINER");
             if (string.IsNullOrEmpty(this.containerName))
                 throw new Exception("Container name configuration not found");            
 
             this.blobPrefix = configuration.GetValue<string>("BLOBPREFIX");
             this.jobId = configuration.GetValue<string>("JOBID");
+            this.storageAccountName = configuration.GetValue<string>("STORAGEACCOUNT");
+            this.storageAccountKey = configuration.GetValue<string>("STORAGEKEY");            
+
 
             this.logger.LogInformation("Job Id: {jobId}", this.jobId);
             this.logger.LogInformation("Container name: {containerName}", this.containerName);
             this.logger.LogInformation("Blob prefix: {blobPrefix}", this.blobPrefix);       
-            
+            this.logger.LogInformation("Storage account: {storageAccountName}", this.storageAccountName);
+            this.logger.LogDebug("Storage account key: {storageAccountKey}", this.storageAccountKey);
+       
         }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
             try
             {
-                var connectionString = configuration.GetValue<string>("STORAGECONNECTIONSTRING");
-                if (string.IsNullOrEmpty(connectionString))
-                    throw new Exception("Storage connection string configuration not found");
+                if (string.IsNullOrEmpty(this.storageAccountName))
+                    throw new Exception("Storage account name configuration not found");
 
-                this.logger.LogDebug($"Storage connection string: {connectionString}");
+                if (string.IsNullOrEmpty(this.storageAccountKey))
+                    throw new Exception("Storage account key configuration not found");
 
                 try
                 {
-                    this.cloudStorageAccount = CloudStorageAccount.Parse(connectionString);
+                    this.cloudStorageAccount = CloudStorageAccount.Parse($"DefaultEndpointsProtocol=https;AccountName={this.storageAccountName};AccountKey={this.storageAccountKey};EndpointSuffix=core.windows.net");
                 }
                 catch (Exception ex)
                 {
                     throw new Exception("Failed to open storage account", ex);
-                }
+                }                
 
                 this.workerTask = Task.Run(() => DoWork(cancellationToken));                           
             }
@@ -78,6 +86,9 @@ namespace Finalizer
                 var blobClient = this.cloudStorageAccount.CreateCloudBlobClient();
                 var containerReference = blobClient.GetContainerReference(containerName);
                 var resultBlobName = Path.Combine(this.blobPrefix, "results.json");
+
+                this.logger.LogInformation($"Starting to create result file: {resultBlobName}");  
+
                 var resultBlob = containerReference.GetAppendBlobReference(resultBlobName);
                 await resultBlob.CreateOrReplaceAsync();
 
@@ -95,12 +106,11 @@ namespace Finalizer
                         try
                         {                            
                             await ProcessFile(blobItem, resultBlob);
-                            break;
                         }
                         catch (StorageException ex)
                         {                            
                             this.logger.LogCritical("Failed to process blob: {error}", ex.ToString());
-                            
+                            Environment.ExitCode = 1;
                             Program.Shutdown.Cancel();
                             return;
                         }
@@ -108,6 +118,8 @@ namespace Finalizer
 
                     currentToken = blobSegment.ContinuationToken;
                 }
+
+                this.logger.LogInformation("Finished succesfully");  
             }
             catch (Exception ex)
             {
@@ -120,17 +132,18 @@ namespace Finalizer
 
         async Task ProcessFile(CloudBlob outputBlob, CloudAppendBlob resultBlob)
         {            
+            var sw = Stopwatch.StartNew();
             using (var contentStream = await outputBlob.OpenReadAsync())
             {
                 await resultBlob.AppendFromStreamAsync(contentStream);
             }
+            sw.Stop();
 
-            this.logger.LogInformation($"Finished processing file '{outputBlob.Name}'");
+            this.logger.LogInformation($"Finished processing file '{outputBlob.Name}' into '{resultBlob.Name}' in {sw.ElapsedMilliseconds}ms");
         }
     
         public async Task StopAsync(CancellationToken cancellationToken)
-        {
-            this.cancellationTokenSource.Cancel();
+        {            
             await workerTask;
         }
     }

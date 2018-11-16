@@ -87,7 +87,7 @@ var (
 	aciMaxParallelism = flag.Int("aciMaxParallelism", getEnvInt("ACIMAXPARALLELISM", 50), "Max parallelism for ACI (50 by default)")
 
 	// itemsPerJob defines the amount of items each job will process
-	itemsPerJob = flag.Int("itemsPerJob", getEnvInt("ITEMSPERJOB", 1000), "Items per job (1000 by default)")
+	itemsPerJob = flag.Int("itemsPerJob", getEnvInt("ITEMSPERJOB", 100000), "Items per job (100000 by default)")
 
 	// aciCompletionsTrigger defines the amount of completions necessary to execute the job using virtual kubelet
 	aciCompletionsTrigger = flag.Int("aciCompletionsTrigger", getEnvInt("ACICOMPLETIONSTRIGGER", 6), "Defines the amount of completions necessary to execute the job using virtual kubelet. Default is 6. 0 to disable ACI")
@@ -96,7 +96,7 @@ var (
 	jobImageOS = flag.String("jobImageOS", getEnvString("JOBIMAGEOS", "linux"), "Defines the job image OS (windows, linux). linux by default")
 
 	// jobImage defines the image identifier about the job
-	jobImage = flag.String("jobImage", getEnvString("JOBIMAGE", "fbeltrao/aksjobscheduler-worker-dotnet:1.0"), "Image to be used in job. Default (fbeltrao/aksjobscheduler-worker-dotnet:1.0)")
+	jobImage = flag.String("jobImage", getEnvString("JOBIMAGE", "fbeltrao/aksjobscheduler-worker-dotnet:1.1"), "Image to be used in job. Default (fbeltrao/aksjobscheduler-worker-dotnet:1.0)")
 
 	// JobImagePullSecret defines the image pull secret when using a private image repository
 	jobImagePullSecret = flag.String("jobImagePullSecret", getEnvString("JOBIMAGEPULLSECRET", ""), "Defines the image pull secret when using a private image repository")
@@ -123,7 +123,7 @@ var (
 	jobFinishedEventGridSasKey = flag.String("eventGridSasKey", getEnvString("EVENTGRIDSASKEY", ""), "Event Grid sas key publish when job is done")
 
 	// jobWatcherImage defines image for watcher
-	jobWatcherImage = flag.String("jobWatcherImage", getEnvString("JOBWATCHERIMAGE", ""), "Job watch image")
+	jobWatcherImage = flag.String("jobWatcherImage", getEnvString("JOBWATCHERIMAGE", "fbeltrao/aksjobscheduler-watcher:1.0"), "Job watch image (default fbeltrao/aksjobscheduler-watcher:1.0)")
 
 	// jobWatcherServiceAccountName defines the service account name used by the job watcher
 	jobWatcherServiceAccountName = flag.String("jobWatcherServiceAccountName", getEnvString("JOBWATCHERSERVICEACCOUNTNAME", ""), "Job watch image")
@@ -135,7 +135,7 @@ var (
 	jobWatcherMemoryLimit = flag.String("jobWatcherMemoryLimit", getEnvString("JOBWATCHERMEMORYLIMIT", "256Mi"), "Job Memory limit for local cluster (256Mi by default)")
 
 	// jobWatcherImage defines image for watcher
-	jobFinalizerImage = flag.String("jobFinalizerImage", getEnvString("JOBFINALIZERIMAGE", ""), "Job finalizer image")
+	jobFinalizerImage = flag.String("jobFinalizerImage", getEnvString("JOBFINALIZERIMAGE", "fbeltrao/aksjobscheduler-finalizer-dotnet:1.0"), "Job finalizer image (by default fbeltrao/aksjobscheduler-finalizer-dotnet:1.0)")
 
 	// jobFinalizerCPULimit defines the CPU limit for the job pod when running on local cluster
 	jobFinalizerCPULimit = flag.String("jobFinalizerCPULimit", getEnvString("JOBFINALIZERCPULIMIT", "0.5"), "Job CPU limit for local cluster (0.5 by default)")

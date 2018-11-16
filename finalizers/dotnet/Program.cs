@@ -14,6 +14,7 @@ namespace Finalizer
         internal static CancellationTokenSource Shutdown = new CancellationTokenSource();
         static async Task Main (string[] args) 
         {
+            Console.WriteLine("Starting dotnet finalizer v1.0");
             try
             {
                 var host = new HostBuilder()
@@ -27,9 +28,11 @@ namespace Finalizer
                         configApp.AddEnvironmentVariables();
                         configApp.AddCommandLine(args);
                     })
-                    .ConfigureLogging((hostContext, configLogging) => {                    
+                    .ConfigureLogging((hostContext, configLogging) => {                                            
                         configLogging.AddConsole();
+#if DEBUG                        
                         configLogging.AddDebug();
+#endif                        
                     })
                     .ConfigureServices ((hostContext, services) => {
                         if (hostContext.HostingEnvironment.IsDevelopment()) {
@@ -37,7 +40,6 @@ namespace Finalizer
                         } else {
                             // Non-development service configuration
                         }
-
 
                         services.AddHostedService<FinalizerService>();
                     });

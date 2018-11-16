@@ -14,6 +14,7 @@ namespace Worker
         internal static CancellationTokenSource Shutdown = new CancellationTokenSource();
         static async Task Main (string[] args) 
         {
+            Console.WriteLine("Starting dotnet worker v1.1");
             try
             {
                 var host = new HostBuilder()
@@ -29,26 +30,16 @@ namespace Worker
                     })
                     .ConfigureLogging((hostContext, configLogging) => {                    
                         configLogging.AddConsole();
+#if DEBUG
                         configLogging.AddDebug();
+#endif                        
                     })
                     .ConfigureServices ((hostContext, services) => {
                         if (hostContext.HostingEnvironment.IsDevelopment()) {
                             // Development service configuration
                         } else {
                             // Non-development service configuration
-                        }
-
-                        var eventGridTopicEndpoint = hostContext.Configuration.GetValue<string>("EVENTGRIDTOPICENDPOINT");
-                        var eventGridSasKey = hostContext.Configuration.GetValue<string>("EVENTGRIDSASKEY");
-
-                        if (!string.IsNullOrEmpty(eventGridTopicEndpoint) && !string.IsNullOrEmpty(eventGridSasKey))
-                        {
-                            services.AddSingleton<IJobFinishedNotifier, EventGridJobFinishedNotifier>();
-                        }
-                        else
-                        {
-                            services.AddSingleton<IJobFinishedNotifier>(new NoJobFinishedNotifier());
-                        }
+                        }                    
 
                         services.AddHostedService<JobService>();
                     });
