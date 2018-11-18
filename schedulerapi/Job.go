@@ -10,63 +10,39 @@ import (
 
 // Job defines a working item
 type Job struct {
-	ID                string     `json:"id"`
-	Status            string     `json:"status"`
-	StartTime         *time.Time `json:"startTime,omitempty"`
-	CompletionTime    *time.Time `json:"completionTime,omitempty"`
-	Active            int        `json:"active,omitempty"`
-	Succeeded         int        `json:"succeeded,omitempty"`
-	Failed            int        `json:"failed,omitempty"`
-	Parallelism       int        `json:"parallelism,omitempty"`
-	Parts             int        `json:"parts,omitempty"`
-	Completions       int        `json:"completions,omitempty"`
-	StorageContainer  string     `json:"storageContainer,omitempty"`
-	StorageBlobPrefix string     `json:"storageBlobPrefix,omitempty"`
-	RunningOnACI      bool       `json:"runningOnAci"`
+	ID                string                         `json:"id"`
+	Status            string                         `json:"status"`
+	StartTime         *time.Time                     `json:"startTime,omitempty"`
+	CompletionTime    *time.Time                     `json:"completionTime,omitempty"`
+	Active            int                            `json:"active,omitempty"`
+	Succeeded         int                            `json:"succeeded,omitempty"`
+	Failed            int                            `json:"failed,omitempty"`
+	Parallelism       int                            `json:"parallelism,omitempty"`
+	Completions       int                            `json:"completions,omitempty"`
+	StorageContainer  string                         `json:"storageContainer,omitempty"`
+	StorageBlobPrefix string                         `json:"storageBlobPrefix,omitempty"`
+	ExecutionLocation scheduler.JobExecutionLocation `json:"executionLocation"`
 }
 
 // NewJob creates a job from a existing K8s job
-func NewJob(job batchv1.Job) Job {
-	storageBlobPrefix := decodeBlobNamePrefix(job.ObjectMeta.Labels[StorageBlobPrefixLabelName])
+func NewJob(job, finalizerJob *batchv1.Job) Job {
+	storageBlobPrefix := decodeBlobNamePrefix(job.ObjectMeta.Annotations[StorageBlobPrefixAnnotationName])
 
 	result := Job{
 		ID:                job.Name,
 		Active:            int(job.Status.Active),
 		Succeeded:         int(job.Status.Succeeded),
 		Failed:            int(job.Status.Failed),
-		StorageContainer:  job.ObjectMeta.Labels[StorageContainerLabelName],
+		StorageContainer:  job.ObjectMeta.Annotations[StorageContainerAnnotationName],
 		StorageBlobPrefix: storageBlobPrefix,
 	}
 
-	partsValue := job.ObjectMeta.Labels[PartsLabelName]
-	if len(partsValue) > 0 {
-		parts, err := strconv.Atoi(partsValue)
-		if err == nil {
-			result.Parts = parts
-		}
-	}
-
-	result.RunningOnACI = len(job.ObjectMeta.Labels[scheduler.LabelNameVirtualKubelet]) > 0
-
-	if len(job.Status.Conditions) > 0 {
-		result.Status = string(job.Status.Conditions[0].Type)
-	} else {
-		if result.Active > 0 || result.Succeeded > 0 || result.Failed > 0 {
-			result.Status = "Pending"
-		} else {
-			result.Status = "Not Started"
-		}
-
-	}
+	hasFinalizer, _ := strconv.ParseBool(job.ObjectMeta.Annotations[JobHasFinalizerAnnotationName])
+	result.ExecutionLocation = scheduler.JobExecutionLocation(job.ObjectMeta.Annotations[scheduler.AnnotationExecutionLocation])
 
 	if job.Status.StartTime != nil {
 		t := job.Status.StartTime.UTC()
 		result.StartTime = &t
-	}
-
-	if job.Status.CompletionTime != nil {
-		t := job.Status.CompletionTime.UTC()
-		result.CompletionTime = &t
 	}
 
 	if job.Spec.Parallelism != nil {
@@ -75,6 +51,40 @@ func NewJob(job batchv1.Job) Job {
 
 	if job.Spec.Completions != nil {
 		result.Completions = int(*job.Spec.Completions)
+	}
+
+	jobToBuildStatus := job
+
+	if hasFinalizer {
+		result.Completions++
+		jobToBuildStatus = finalizerJob
+
+		if finalizerJob != nil {
+			result.Succeeded += int(finalizerJob.Status.Succeeded)
+			result.Active += int(finalizerJob.Status.Active)
+			result.Failed += int(finalizerJob.Status.Failed)
+
+			if finalizerJob.Status.CompletionTime != nil {
+				t := finalizerJob.Status.CompletionTime.UTC()
+				result.CompletionTime = &t
+			}
+		}
+	} else {
+		if job.Status.CompletionTime != nil {
+			t := job.Status.CompletionTime.UTC()
+			result.CompletionTime = &t
+		}
+	}
+
+	// Build status
+	if jobToBuildStatus != nil && len(jobToBuildStatus.Status.Conditions) > 0 {
+		result.Status = string(jobToBuildStatus.Status.Conditions[0].Type)
+	} else {
+		if result.Active > 0 || result.Succeeded > 0 || result.Failed > 0 {
+			result.Status = "Pending"
+		} else {
+			result.Status = "Not Started"
+		}
 	}
 
 	return result

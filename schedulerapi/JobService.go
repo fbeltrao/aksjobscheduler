@@ -25,11 +25,15 @@ func getWatcherJobID(jobID string) string {
 	return jobID + "-watcher"
 }
 
+func getFinalizerJobID(jobID string) string {
+	return jobID + "-finalizer"
+}
+
 func createWatcherKubernetesJob(k8sScheduler *scheduler.Scheduler, jobID, containerName, blobNamePrefix string, runFinalizerInACI bool) (*batchv1.Job, error) {
 	if len(*jobWatcherImage) > 0 && len(*jobFinalizerImage) > 0 {
 
 		watcherJobID := getWatcherJobID(jobID)
-		jobDetail := scheduler.NewJobDetail{
+		jobDetail := scheduler.AddJobRequest{
 			Completions:        1,
 			ImageName:          "watcherimage",
 			ImagePullSecrets:   *jobImagePullSecret,
@@ -40,13 +44,14 @@ func createWatcherKubernetesJob(k8sScheduler *scheduler.Scheduler, jobID, contai
 			Parallelism:        1,
 			JobID:              watcherJobID,
 			JobName:            watcherJobID,
-			RequiresACI:        false,
+			ExecutionLocation:  scheduler.JobExecutionInCluster,
+			Annotations: map[string]string{
+				"watcher":                       "1",
+				StorageContainerAnnotationName:  containerName,
+				StorageBlobPrefixAnnotationName: encodeBlobNamePrefix(blobNamePrefix),
+			},
 			Labels: map[string]string{
-				JobCorrelationIDLabelName:  jobID,
-				"watcher":                  "1",
-				CreatedByLabelName:         CreatedByLabelValue,
-				StorageContainerLabelName:  containerName,
-				StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
+				JobCorrelationIDLabelName: jobID,
 			},
 		}
 
@@ -105,7 +110,7 @@ func createBatchJob(jobID, containerName, blobNamePrefix string, itemsCount int)
 	}
 	log.Infof("Starting batch job %s, jobs count: %d, completions: %d, cpu: %s, memory: %s", jobID, itemsCount, completions, *batchCPULimit, *batchMemoryLimit)
 
-	jobDetail := scheduler.NewJobDetail{
+	jobDetail := scheduler.AddJobRequest{
 		Completions:      1,
 		Parallelism:      1,
 		ImageName:        "batchimage",
@@ -116,12 +121,12 @@ func createBatchJob(jobID, containerName, blobNamePrefix string, itemsCount int)
 
 		JobID:   jobID,
 		JobName: jobID,
+		Annotations: map[string]string{
+			StorageContainerAnnotationName:  containerName,
+			StorageBlobPrefixAnnotationName: encodeBlobNamePrefix(blobNamePrefix),
+		},
 		Labels: map[string]string{
-			JobCorrelationIDLabelName:  jobID,
-			CreatedByLabelName:         CreatedByLabelValue,
-			StorageContainerLabelName:  containerName,
-			StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
-			PartsLabelName:             strconv.Itoa(completions),
+			JobCorrelationIDLabelName: jobID,
 		},
 	}
 
@@ -144,6 +149,7 @@ func createBatchJob(jobID, containerName, blobNamePrefix string, itemsCount int)
 
 func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsCount int) (*batchv1.Job, error) {
 
+	executionLocation := scheduler.JobExecutionInCluster
 	k8sScheduler, err := createScheduler()
 	if err != nil {
 		return nil, err
@@ -156,6 +162,7 @@ func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsC
 	memoryLimit := *JobMemoryLimit
 
 	if requiresACI {
+		executionLocation = scheduler.JobExecutionInACI
 		parallelism = *aciMaxParallelism
 		cpuLimit = *aciJobCPULimit
 		memoryLimit = *aciJobMemoryLimit
@@ -172,25 +179,27 @@ func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsC
 
 	log.Infof("Starting job %s, jobs count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, locationsCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
 
-	jobDetail := scheduler.NewJobDetail{
-		Completions:      completions,
-		Parallelism:      parallelism,
-		ImageName:        "jobimage",
-		ImagePullSecrets: *jobImagePullSecret,
-		Image:            *jobImage,
-		ImageOS:          *jobImageOS,
-		CPU:              cpuLimit,
-		Memory:           memoryLimit,
-
-		JobID:       jobID,
-		JobName:     jobID,
-		RequiresACI: requiresACI,
+	jobDetail := scheduler.AddJobRequest{
+		Completions:       completions,
+		Parallelism:       parallelism,
+		ImageName:         "jobimage",
+		ImagePullSecrets:  *jobImagePullSecret,
+		Image:             *jobImage,
+		ImageOS:           *jobImageOS,
+		CPU:               cpuLimit,
+		Memory:            memoryLimit,
+		JobID:             jobID,
+		JobName:           jobID,
+		ExecutionLocation: executionLocation,
+		Annotations: map[string]string{
+			StorageContainerAnnotationName:  containerName,
+			StorageBlobPrefixAnnotationName: encodeBlobNamePrefix(blobNamePrefix),
+			MainJobAnnotationName:           "1",
+			JobHasWatcherAnnotationName:     strconv.FormatBool(watcherJob != nil),
+			JobHasFinalizerAnnotationName:   strconv.FormatBool(len(*jobFinalizerImage) > 0),
+		},
 		Labels: map[string]string{
-			JobCorrelationIDLabelName:  jobID,
-			CreatedByLabelName:         CreatedByLabelValue,
-			StorageContainerLabelName:  containerName,
-			StorageBlobPrefixLabelName: encodeBlobNamePrefix(blobNamePrefix),
-			JobHasWatcherLabelName:     strconv.FormatBool(watcherJob != nil),
+			JobCorrelationIDLabelName: jobID,
 		},
 	}
 
@@ -256,7 +265,7 @@ func createJobInputFiles(r *http.Request, blobContainerName, jobNamePrefix strin
 	return splitter.Split(r.Context(), file, containerURL, jobNamePrefix)
 }
 
-func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNamePrefix string, part int) error {
+func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNamePrefix string) error {
 	credential, err := azblob.NewSharedKeyCredential(*storageAccountName, *storageAccountKey)
 	if err != nil {
 		return err
@@ -271,12 +280,7 @@ func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNa
 	// pipeline to make requests.
 	containerURL := azblob.NewContainerURL(*URL, p)
 
-	var prefix string
-	if part > 0 {
-		prefix = fmt.Sprintf("%s/output_%d.", blobNamePrefix, part)
-	} else {
-		prefix = fmt.Sprintf("%s/output.json", blobNamePrefix)
-	}
+	prefix := fmt.Sprintf("%s/results.json", blobNamePrefix)
 
 	log.Debugf("Creating results from prefix %s", prefix)
 	listBlobsFlatSegment := azblob.ListBlobsSegmentOptions{
@@ -297,10 +301,10 @@ func writeAzureBlobs(ctx context.Context, w io.Writer, blobContainerName, blobNa
 		// the next segment (after processing the current result segment).
 		marker = listBlob.NextMarker
 
-		log.Debugf("Found %d blobs to return", len(listBlob.Segment.BlobItems))
+		log.Infof("Found %d blobs to return", len(listBlob.Segment.BlobItems))
 
 		for _, blobItem := range listBlob.Segment.BlobItems {
-			log.Debugf("Writing %s to response", blobItem.Name)
+			log.Infof("Writing %s to response", blobItem.Name)
 			err = streamBlobContentWithBuffer(ctx, w, containerURL.NewBlobURL(blobItem.Name), buffer)
 			if err != nil {
 				return err

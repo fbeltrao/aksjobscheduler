@@ -12,8 +12,14 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// LabelNameVirtualKubelet defines the label name for jobs created in ACI
-const LabelNameVirtualKubelet = "virtual-kubelet"
+// AnnotationExecutionLocation defines the annotation containing the job execution location
+const AnnotationExecutionLocation = "execution_location"
+
+// CreatedByLabelName defines the label name for jobs created by this api
+const CreatedByLabelName = "created_by"
+
+// CreatedByLabelValue defines the label value for jobs created by this api
+const CreatedByLabelValue = "aksscheduler"
 
 // Scheduler facilitates the work with K8s jobs
 type Scheduler struct {
@@ -57,33 +63,50 @@ func NewScheduler(kubeconfig string) (*Scheduler, error) {
 }
 
 // NewJob creates a new job
-func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
+func (s Scheduler) NewJob(request *AddJobRequest) (*batchv1.Job, error) {
 
 	resourceRequests := apiv1.ResourceList{}
 
-	if len(jobDetail.CPU) > 0 {
-		resourceRequests[apiv1.ResourceCPU] = resource.MustParse(jobDetail.CPU)
+	if len(request.CPU) > 0 {
+		resourceRequests[apiv1.ResourceCPU] = resource.MustParse(request.CPU)
 	}
 
-	if len(jobDetail.Memory) > 0 {
-		resourceRequests[apiv1.ResourceMemory] = resource.MustParse(jobDetail.Memory)
+	if len(request.Memory) > 0 {
+		resourceRequests[apiv1.ResourceMemory] = resource.MustParse(request.Memory)
 	}
 
-	parallelismInt32 := int32(jobDetail.Parallelism)
-	completionsInt32 := int32(jobDetail.Completions)
+	parallelismInt32 := int32(request.Parallelism)
+	completionsInt32 := int32(request.Completions)
 
 	var imagePullSecrets []apiv1.LocalObjectReference
-	if len(jobDetail.ImagePullSecrets) > 0 {
+	if len(request.ImagePullSecrets) > 0 {
 		imagePullSecrets = append(imagePullSecrets, apiv1.LocalObjectReference{
-			Name: jobDetail.ImagePullSecrets,
+			Name: request.ImagePullSecrets,
 		})
+	}
+
+	// Copy annotations adding the execution location
+	annotations := map[string]string{
+		AnnotationExecutionLocation: string(request.ExecutionLocation),
+	}
+	for k, v := range request.Annotations {
+		annotations[k] = v
+	}
+
+	// Copy labels adding the execution location
+	labels := map[string]string{
+		CreatedByLabelName: CreatedByLabelValue,
+	}
+	for k, v := range request.Labels {
+		labels[k] = v
 	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobDetail.JobID,
-			Namespace: s.Namespace,
-			Labels:    jobDetail.Labels,
+			Name:        request.JobID,
+			Namespace:   s.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
 			Parallelism:  &parallelismInt32,
@@ -91,15 +114,15 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 			Completions:  &completionsInt32,
 			Template: apiv1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: jobDetail.JobName,
+					Name: request.JobName,
 				},
 				Spec: apiv1.PodSpec{
 					Containers: []apiv1.Container{
 						{
-							Name:    jobDetail.ImageName,
-							Image:   jobDetail.Image,
-							Command: jobDetail.Commands,
-							Env:     jobDetail.Env,
+							Name:    request.ImageName,
+							Image:   request.Image,
+							Command: request.Commands,
+							Env:     request.Env,
 							Resources: apiv1.ResourceRequirements{
 								Requests: resourceRequests,
 							},
@@ -113,11 +136,11 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 	}
 
 	// need to run on ACI?
-	if jobDetail.RequiresACI {
+	if request.ExecutionLocation == JobExecutionInACI {
 
 		imageOS := "linux"
-		if len(jobDetail.ImageOS) > 0 {
-			imageOS = strings.ToLower(jobDetail.ImageOS)
+		if len(request.ImageOS) > 0 {
+			imageOS = strings.ToLower(request.ImageOS)
 		}
 
 		job.Spec.Template.Spec.NodeSelector = map[string]string{
@@ -134,11 +157,6 @@ func (s Scheduler) NewJob(jobDetail *NewJobDetail) (*batchv1.Job, error) {
 				Effect:   apiv1.TaintEffectNoSchedule,
 			},
 		}
-
-		if job.ObjectMeta.Labels == nil {
-			job.ObjectMeta.Labels = make(map[string]string)
-		}
-		job.ObjectMeta.Labels[LabelNameVirtualKubelet] = "true"
 	}
 
 	return s.clientset.Batch().Jobs(s.Namespace).Create(job)
@@ -154,6 +172,15 @@ func (s Scheduler) ListJobsByLabel(name, value string) (*batchv1.JobList, error)
 	return s.clientset.Batch().Jobs(s.Namespace).List(metav1.ListOptions{
 		LabelSelector: name + "=" + value,
 	})
+}
+
+// SearchJobsByLabel retrieves the list of jobs according to labels
+func (s Scheduler) SearchJobsByLabel(labelSelector string) (*batchv1.JobList, error) {
+	listOptions := metav1.ListOptions{
+		LabelSelector: labelSelector,
+	}
+
+	return s.clientset.Batch().Jobs(s.Namespace).List(listOptions)
 }
 
 // SearchJobs retrieves the list of jobs according to a label and/or name

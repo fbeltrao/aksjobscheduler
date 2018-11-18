@@ -14,23 +14,20 @@ import (
 // JobCorrelationIDLabelName defines the label name to correlate jobs with additional ones
 const JobCorrelationIDLabelName = "job_correlation_id"
 
-// JobHasWatcherLabelName defines if job has a companion watcher job
-const JobHasWatcherLabelName = "job_has_watcher"
+// MainJobAnnotationName defines annotation name for main job flag
+const MainJobAnnotationName = "job_is_main"
 
-// CreatedByLabelName defines the label name for jobs created by this api
-const CreatedByLabelName = "created_by"
+// JobHasWatcherAnnotationName defines if job has a companion watcher job
+const JobHasWatcherAnnotationName = "job_has_watcher"
 
-// CreatedByLabelValue defines the label value for jobs created by this api
-const CreatedByLabelValue = "aksscheduler"
+// JobHasFinalizerAnnotationName defines if job has a finalizer
+const JobHasFinalizerAnnotationName = "job_has_finalizer"
 
-// StorageContainerLabelName defines the label name containing the storage container name
-const StorageContainerLabelName = "storage_container"
+// StorageContainerAnnotationName defines the label name containing the storage container name
+const StorageContainerAnnotationName = "storage_container"
 
-// StorageBlobPrefixLabelName defines the label name containing the storage blob input prefix
-const StorageBlobPrefixLabelName = "storage_blob_prefix"
-
-// PartsLabelName defines the label name containing the amount of parts the job is divided into
-const PartsLabelName = "parts"
+// StorageBlobPrefixAnnotationName defines the label name containing the storage blob input prefix
+const StorageBlobPrefixAnnotationName = "storage_blob_prefix"
 
 // JobStorageContainerEnvVarName defines the environment variable containing the storage container for the job
 const JobStorageContainerEnvVarName = "CONTAINER"
@@ -129,10 +126,10 @@ var (
 	jobWatcherServiceAccountName = flag.String("jobWatcherServiceAccountName", getEnvString("JOBWATCHERSERVICEACCOUNTNAME", ""), "Job watch image")
 
 	// jobWatcherCPULimit defines the CPU limit for the job pod when running on local cluster
-	jobWatcherCPULimit = flag.String("jobWatcherCPULimit", getEnvString("JOBWATCHERCPULIMIT", "0.5"), "Job CPU limit for local cluster (0.5 by default)")
+	jobWatcherCPULimit = flag.String("jobWatcherCPULimit", getEnvString("JOBWATCHERCPULIMIT", "0.1"), "Job CPU limit for local cluster (0.1 by default)")
 
 	// jobWatcherMemoryLimit defines the memory limit for the job pod when running on local cluster
-	jobWatcherMemoryLimit = flag.String("jobWatcherMemoryLimit", getEnvString("JOBWATCHERMEMORYLIMIT", "256Mi"), "Job Memory limit for local cluster (256Mi by default)")
+	jobWatcherMemoryLimit = flag.String("jobWatcherMemoryLimit", getEnvString("JOBWATCHERMEMORYLIMIT", "80Mi"), "Job Memory limit for local cluster (80Mi by default)")
 
 	// jobWatcherImage defines image for watcher
 	jobFinalizerImage = flag.String("jobFinalizerImage", getEnvString("JOBFINALIZERIMAGE", "fbeltrao/aksjobscheduler-finalizer-dotnet:1.0"), "Job finalizer image (by default fbeltrao/aksjobscheduler-finalizer-dotnet:1.0)")

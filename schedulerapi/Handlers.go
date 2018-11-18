@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	scheduler "github.com/fbeltrao/aksjobscheduler/scheduler"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
+	batchv1 "k8s.io/api/batch/v1"
 )
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +62,10 @@ func createJobHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(jobID))
 }
 
+func getSelectorLabelForJobID(jobID string) string {
+	return fmt.Sprintf("%s=%s,%s=%s", scheduler.CreatedByLabelName, scheduler.CreatedByLabelValue, JobCorrelationIDLabelName, jobID)
+}
+
 // getJobHandler returns the job status
 func getJobHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -75,43 +81,60 @@ func getJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs, err := k8sScheduler.SearchJobs(jobID, CreatedByLabelName, CreatedByLabelValue)
+	k8sJobs, err := k8sScheduler.SearchJobsByLabel(getSelectorLabelForJobID(jobID))
 	if err != nil {
 		responseWithError(w, err)
 		return
 	}
 
-	if len(jobs.Items) == 0 {
+	if len(k8sJobs.Items) == 0 {
 		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
 		return
 	}
 
-	mainJob := jobs.Items[0]
+	jobs := createJobsFromList(k8sJobs.Items)
 
-	// jobHasWatcher, _ := strconv.ParseBool(mainJob.Labels[JobHasWatcherLabelName])
-
-	// var watcherJob batchv1.Job
-	// if jobHasWatcher {
-	// 	watcherJobs, err := k8sScheduler.SearchJobs(getWatcherJobID(mainJob.GetName()), CreatedByLabelName, CreatedByLabelValue)
-
-	// 	if err != nil {
-	// 		responseWithError(w, err)
-	// 		return
-	// 	}
-
-	// 	if len(watcherJobs.Items) > 0 {
-	// 		watcherJob = watcherJobs.Items[0]
-	// 	}
-	// }
-
-	jobStatus := NewJob(mainJob)
+	if len(jobs) == 0 {
+		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(jobStatus)
+	err = json.NewEncoder(w).Encode(jobs[0])
 	if err != nil {
 		responseWithError(w, err)
 		return
 	}
+}
+
+func createJobsFromList(source []batchv1.Job) []Job {
+
+	result := make([]Job, 0)
+	for _, item := range source {
+		if item.Annotations[MainJobAnnotationName] == "1" {
+			j := buildMainJob(item, source)
+			result = append(result, j)
+		}
+	}
+
+	return result
+}
+
+func buildMainJob(mainJob batchv1.Job, source []batchv1.Job) Job {
+
+	hasFinalizer, _ := strconv.ParseBool(mainJob.Annotations[JobHasFinalizerAnnotationName])
+
+	var finalizerJob *batchv1.Job
+	if hasFinalizer {
+		for _, j := range source {
+			if j.GetName() == getFinalizerJobID(mainJob.GetName()) {
+				finalizerJob = &j
+				break
+			}
+		}
+	}
+
+	return NewJob(&mainJob, finalizerJob)
 }
 
 // listJobsHandler returns the all jobs
@@ -123,17 +146,13 @@ func listJobsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allJobs, err := k8sScheduler.SearchJobs("", CreatedByLabelName, CreatedByLabelValue)
+	allK8sJobs, err := k8sScheduler.SearchJobs("", scheduler.CreatedByLabelName, scheduler.CreatedByLabelValue)
 	if err != nil {
 		responseWithError(w, err)
 		return
 	}
 
-	result := make([]Job, 0)
-
-	for _, job := range allJobs.Items {
-		result = append(result, NewJob(job))
-	}
+	result := createJobsFromList(allK8sJobs.Items)
 
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(result)
@@ -182,41 +201,34 @@ func getJobResultHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs, err := k8sScheduler.SearchJobs(jobID, CreatedByLabelName, CreatedByLabelValue)
+	k8sJobs, err := k8sScheduler.SearchJobsByLabel(getSelectorLabelForJobID(jobID))
 	if err != nil {
 		responseWithError(w, err)
 		return
 	}
 
-	if len(jobs.Items) == 0 {
+	if len(k8sJobs.Items) == 0 {
 		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
 		return
 	}
 
-	job := NewJob(jobs.Items[0])
-	if job.Completions != job.Succeeded {
-		responseWithApplicationError(w, http.StatusNotFound, fmt.Sprintf("Job has not yet completed: %d of %d completed", job.Succeeded, job.Completions))
+	jobs := createJobsFromList(k8sJobs.Items)
+
+	if len(jobs) == 0 {
+		responseWithApplicationError(w, http.StatusNotFound, "Job not found")
 		return
 	}
 
-	part := 0
-	partQueryParam := r.URL.Query().Get("part")
-	if len(partQueryParam) > 0 {
-		part, err = strconv.Atoi(partQueryParam)
-		if err != nil {
-			part = 0
-		}
-	}
-
-	if part > job.Parts {
-		responseWithApplicationError(w, http.StatusBadRequest, fmt.Sprintf("Part has invalid value. Job has %d parts, requested for part %d", job.Parts, part))
+	job := jobs[0]
+	if job.Completions != job.Succeeded {
+		responseWithApplicationError(w, http.StatusNotFound, fmt.Sprintf("Job has not yet completed: %d of %d completed", job.Succeeded, job.Completions))
 		return
 	}
 
 	// open files and stream back
 	w.WriteHeader(http.StatusOK)
 	w.Header().Add("Content-Type", "application/json")
-	err = writeAzureBlobs(r.Context(), w, job.StorageContainer, job.StorageBlobPrefix, part)
+	err = writeAzureBlobs(r.Context(), w, job.StorageContainer, job.StorageBlobPrefix)
 	if err != nil {
 		responseWithError(w, err)
 		return

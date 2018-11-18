@@ -166,7 +166,12 @@ func startFinalizerJob(k8sScheduler *scheduler.Scheduler, jobName string) (*batc
 	finalizerJobName := jobName + "-finalizer"
 	log.Infof("Starting finalizer job '%s', image: %s, cpu: %s, memory: %s", finalizerJobName, *jobImage, *jobCPULimit, *jobMemoryLimit)
 
-	jobDetail := &scheduler.NewJobDetail{
+	executionLocation := scheduler.JobExecutionInCluster
+	if *runInACI {
+		executionLocation = scheduler.JobExecutionInACI
+	}
+
+	addJobRequest := &scheduler.AddJobRequest{
 		Completions:      1,
 		Parallelism:      1,
 		CPU:              *jobCPULimit,
@@ -180,7 +185,7 @@ func startFinalizerJob(k8sScheduler *scheduler.Scheduler, jobName string) (*batc
 		Labels: map[string]string{
 			"job_correlation_id": jobName,
 		},
-		RequiresACI: *runInACI,
+		ExecutionLocation: executionLocation,
 		Env: []v1.EnvVar{
 			{Name: "STORAGEACCOUNT", Value: *storageAccountName},
 			{Name: "STORAGEKEY", Value: *storageAccountKey},
@@ -189,7 +194,7 @@ func startFinalizerJob(k8sScheduler *scheduler.Scheduler, jobName string) (*batc
 		},
 	}
 
-	k8sJob, err := k8sScheduler.NewJob(jobDetail)
+	k8sJob, err := k8sScheduler.NewJob(addJobRequest)
 
 	return k8sJob, err
 }
