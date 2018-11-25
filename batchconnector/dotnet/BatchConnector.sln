@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28010.2050
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BatchConnector", ".\BatchConnector.csproj", "{BC30EB98-97E1-42EF-970E-53B11E845AB6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BC30EB98-97E1-42EF-970E-53B11E845AB6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BC30EB98-97E1-42EF-970E-53B11E845AB6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BC30EB98-97E1-42EF-970E-53B11E845AB6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BC30EB98-97E1-42EF-970E-53B11E845AB6}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1009034D-5308-4099-829F-951627D5292A}
+	EndGlobalSection
+EndGlobal

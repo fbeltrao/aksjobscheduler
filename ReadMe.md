@@ -1,6 +1,6 @@
-# Scheduling Jobs in AKS with Virtual Kubelet
+# Running Jobs in AKS with Virtual Kubelet
 
-![Scheduling Jobs in AKS with Virtual Kubelet](./media/aksjobscheduler.png)
+![Running Jobs in AKS with Virtual Kubelet](./media/aksjobscheduler.png)
 
 Most Kubernetes sample applications demonstrate how to run web applications or databases in the orchestrator. Those workloads run until terminated.
 
@@ -15,7 +15,7 @@ This repository contains a demo application that schedules `Run to Completion` j
 
 ## Scenario
 
-Company is using a Kubernetes cluster to host a few applications. Cluster resource utilisation is high and team wants to avoid oversizing. One of the teams has new requirement to run jobs with unpredictable loads. In high peaks, the required compute resources will exceed what is available in the cluster.
+Company is using a Kubernetes cluster to host a few applications. Cluster resource utilisation is high and team wants to avoid oversizing. One of the teams has new requirement to run jobs with unpredictable loads. In high peaks, the required compute resources will exceed provisioned cluster.
 
 A solution to this problem is to leverage Virtual Kubelet, scheduling jobs outside the cluster in case workload would starve available resources.
 
@@ -23,7 +23,7 @@ In my experience running the sample application using Virtual Kubelet had the fo
 
 |Location|Image Repository|Min Duration|Max Duration|
 |-|-|-|-|
-|Cluster|doesn't matter (image caching)|7 secs|35 secs|
+|Cluster|doesn't matter (image is cached)|7 secs|35 secs|
 |ACI|ACR|35 secs|60 secs|
 |ACI|Docker Hub|35 secs| 80 secs|
 
@@ -54,7 +54,7 @@ The workaround describe in the GitHub issue requires us to create a secret and p
 Creating the secret is documented [here](https://docs.microsoft.com/en-us/azure/container-registry/container-registry-auth-aks#access-with-kubernetes-secret):
 
 ```bash
-$ kubectl create secret docker-registry my-acr-auth --docker-server xxx.azurecr.io --docker-username "<service principal id>" --docker-password "<service principal password>" --docker-email "<email address>"
+kubectl create secret docker-registry my-acr-auth --docker-server xxx.azurecr.io --docker-username "<service principal id>" --docker-password "<service principal password>" --docker-email "<email address>"
 ```
 
 Additionally, deploy the Jobs API with the correct `JOBIMAGEPULLSECRET`
@@ -84,7 +84,7 @@ spec:
 Running the job in Kubernetes with kubectl is demonstrated below:
 
 ```bash
-$ kubectl apply -f https://raw.githubusercontent.com/kubernetes/website/master/content/en/examples/controllers/job.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/website/master/content/en/examples/controllers/job.yaml
 ```
 
 Viewing running jobs
@@ -137,7 +137,7 @@ spec:
 
 ## Sample application
 
-The code found in this repository has 2 components:
+The code found in this repository has 4 components:
 
 - **Jobs API (/server)**\
 Web API to manage jobs. Executing of new jobs is redirect depending on the thresholds defined for local cluster workloads.\
@@ -145,7 +145,13 @@ The implementation uses the Kubernetes API to schedule jobs. State is obtained f
 Job input file is copied to Azure Storage. Index files are created to enable parallelism in job execution.
 
 - **Job Worker (/workers/dotnet)**\
-Sample implementation of job worker.
+Sample implementation of a job worker. Job worker will create an output file for each input file. An additional job (finalizer) builds a single output from multiple intermediate results (dummy map/reduce).
+
+- **Job Finalizer (/finalizers/dotnet)**\
+Sample implementation of job finalizer, aggregation all intermediate file into one. The implementation found here is a simple file concatenation. Complexer implementations require additional computing.
+
+- **Job Watcher (/watcher)**\
+A low resource utilization job that watches the worker job. Once finished it starts the finalizer job. If Event Grid is configure it will wait until the finalizer job is complete to publish the event.
 
 Starting a new job requires sending a file through the Jobs API. A post request to http://api-url/jobs with the input file (as upload file like the example below) creates a job:
 
@@ -223,7 +229,7 @@ Besides interacting with Azure Storage, the API schedules jobs in Kubernetes usi
 |POST /jobs|Receives a file upload, copy to az storage, create index files and starts K8s job|
 |GET /jobs|Retrieves all jobs|
 |GET /jobs/{id}|Retrieves detail of a job|
-|GET /jobs/{id}/results|Retrieves result of a complete job. Use the query string `part` to download small parts|
+|GET /jobs/{id}/results|Retrieves result of a complete job|
 
 The job creation process is the following:
 
@@ -245,10 +251,10 @@ The API can be configures using environment variables as detailed here:
 |-|-|-|
 |STORAGEACCOUNT|Storage account name||
 |STORAGEKEY|Storage account key||
-|CONTAINERNAME|Storage container name|jobs|
+|CONTAINER|Storage container name|jobs|
 |MAXPARALLELISM|Max parallelism for local cluster|2|
 |ACIMAXPARALLELISM|Max parallelism for ACI|50|
-|LINESPERJOB|Lines per job|100'000|
+|ITEMSPERJOB|Items per job|100'000|
 |ACICOMPLETIONSTRIGGER|Defines the amount of completions necessary to execute the job using virtual kubelet|Default is 6. 0 to disable ACI|
 |ACIHOSTNAME|Defines the ACI host name|virtual-kubelet-virtual-kubelet-linux-westeurope|
 |JOBIMAGE|Image to be used in job|fbeltrao/aksjobscheduler-worker-dotnet:1.0|
@@ -257,9 +263,14 @@ The API can be configures using environment variables as detailed here:
 |ACIJOBCPULIMIT|Job CPU limit for ACI|1|
 |JOBMEMORYLIMIT|Job Memory limit for local cluster|256Mi|
 |ACIJOBMEMORYLIMIT|Job Memory limit for ACI|1Gi|
-|EVENTGRIDENDPOINT|Event Grid event endpoint to publish when job is done||
-|EVENTGRIDSASKEY|Event Grid sas key publish when job is done||
 |DEBUGLOG|Enabled debug log level|false|
+|JOBWATCHERIMAGE|Image running the job watcher|fbeltrao/aksjobscheduler-watcher:1.0|
+|JOBWATCHERSERVICEACCOUNTNAME|Service account used by watcher pod||
+|JOBFINALIZERIMAGE|Defines image for the job finalizer|fbeltrao/aksjobscheduler-finalizer-dotnet:1.0|
+|JOBFINALIZERCPULIMIT|Defines the CPU limit for finalizer job pod running on local cluster|0.5|
+|JOBFINALIZERMEMORYLIMIT|Defines the memory limit for finalizer job pod running in local cluster
+|EVENTGRIDENDPOINT|Event Grid event endpoint to publish when job is complete||
+|EVENTGRIDSASKEY|Event Grid sas key used to publish when job is complete||
 
 Source code is located at /server
 
@@ -268,7 +279,7 @@ Source code is located at /server
 The provided worker implementation is based on .NET Core. A worker execution happens in the following way:
 
 ```text
-If could acquire lease to one of the index files
+If lease to a index file is acquired
   Periodically renew lease
   Process lines defined by leased index file, writing to output file
   Delete leased index file
@@ -298,14 +309,34 @@ There are two ways to identify when a job has finished:
 }
 ```
 
-- By using Event Grid. If an event grid endpoint and sas keys was provided to the Jobs API an additional completion will be scheduled. The worker will send an event grid notification if no index files is found (all indexes were completed).
+- By using Event Grid. If an event grid endpoint and sas keys was provided to the Jobs API the job watcher will wait until worker and aggregator jobs are finalized to publish an event.
+
+## Using gpu in Virtual Kubelet
+
+[GPU support](https://feedback.azure.com/forums/602224-azure-container-instances/suggestions/34745278-add-gpu-enabled-container-instances) is being added to Azure Container Instances. This feature is currently in [private preview](aka.ms/aci/gpu-preview).
+
+The Virtual Kubelet implementation with gpu support is not yet in master branch, current progress can be seen here: https://github.com/virtual-kubelet/virtual-kubelet/tree/aci-gpu.
+
+In order to try (assuming you are part of ACI GPU private preview) do the following:
+
+1. Using helm, install the ***experimental*** version of Virtual Kubelet:
+
+```bash
+helm install "https://github.com/virtual-kubelet/virtual-kubelet/blob/aci-gpu/charts/virtual-kubelet-for-aks-0.1.9.tgz?raw=true" \
+--name "virtual-kubelet" \
+--set provider=azure \
+--set providers.azure.targetAKS=true \
+--set image.tag="aci-gpu.0.1" \
+--set env.aciRegion="eastus"
+```
+
+2. Trigger the job to use aci and gpu by using query parameters when creating a new job `POST http://{url}/jobs?gpu=K80&gpuQuantity=1&aci=1`
 
 ## Improvements
 
 This is a list of things that should be improved:
 
 - Accessing ACR images from virtual kubelet ([GitHub issue](https://github.com/virtual-kubelet/virtual-kubelet/issues/192))
-- Worker job is responsible for sending event grid notifications. Should be the responsibility of the scheduler
-- Worker job should be able to process multiple files to decrease the time needed to create new pods
 - Review io reading from storage in job scheduler. I am new to golang, there might be better ways to implement it
 - Use proper dependency management in go project
+- Update documentation once ACI GPU support is general available

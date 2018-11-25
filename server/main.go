@@ -19,6 +19,6 @@ func main() {
 
 	schedulerapi.SetupRoutes(router)
 
-	log.Info("Starting Jobs API listening on port 8000")
+	log.Info("Starting Jobs API v1.1 listening on port 8000")
 	log.Fatal(http.ListenAndServe(":8000", router))
 }

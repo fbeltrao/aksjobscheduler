@@ -7,14 +7,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Threading;
 
-namespace Worker
+namespace Finalizer
 {
     class Program 
     {
         internal static CancellationTokenSource Shutdown = new CancellationTokenSource();
         static async Task Main (string[] args) 
         {
-            Console.WriteLine("Starting dotnet worker v1.1");
+            Console.WriteLine("Starting dotnet finalizer v1.0");
             try
             {
                 var host = new HostBuilder()
@@ -28,9 +28,9 @@ namespace Worker
                         configApp.AddEnvironmentVariables();
                         configApp.AddCommandLine(args);
                     })
-                    .ConfigureLogging((hostContext, configLogging) => {                    
+                    .ConfigureLogging((hostContext, configLogging) => {                                            
                         configLogging.AddConsole();
-#if DEBUG
+#if DEBUG                        
                         configLogging.AddDebug();
 #endif                        
                     })
@@ -39,16 +39,16 @@ namespace Worker
                             // Development service configuration
                         } else {
                             // Non-development service configuration
-                        }                    
+                        }
 
-                        services.AddHostedService<JobService>();
+                        services.AddHostedService<FinalizerService>();
                     });
 
                 await host.RunConsoleAsync(Shutdown.Token);                
             }
             catch (Exception ex)
             {                
-                Console.Error.WriteLine($"Error starting job: {ex.ToString()}");
+                Console.Error.WriteLine($"Error starting finalizer: {ex.ToString()}");
                 Environment.ExitCode = 1;
             }
         }

@@ -54,7 +54,7 @@ spec:
       serviceAccountName: aks-jobscheduler
       containers:
       - name: jobscheduler-web
-        image: fbeltrao/aksjobscheduler-server:1.0
+        image: fbeltrao/aksjobscheduler-server:1.1
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
