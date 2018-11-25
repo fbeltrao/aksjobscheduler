@@ -123,7 +123,7 @@ var (
 	jobWatcherImage = flag.String("jobWatcherImage", getEnvString("JOBWATCHERIMAGE", "fbeltrao/aksjobscheduler-watcher:1.0"), "Job watch image (default fbeltrao/aksjobscheduler-watcher:1.0)")
 
 	// jobWatcherServiceAccountName defines the service account name used by the job watcher
-	jobWatcherServiceAccountName = flag.String("jobWatcherServiceAccountName", getEnvString("JOBWATCHERSERVICEACCOUNTNAME", ""), "Job watch image")
+	jobWatcherServiceAccountName = flag.String("jobWatcherServiceAccountName", getEnvString("JOBWATCHERSERVICEACCOUNTNAME", ""), "Service account used by watcher pod")
 
 	// jobWatcherCPULimit defines the CPU limit for the job pod when running on local cluster
 	jobWatcherCPULimit = flag.String("jobWatcherCPULimit", getEnvString("JOBWATCHERCPULIMIT", "0.1"), "Job CPU limit for local cluster (0.1 by default)")
@@ -131,13 +131,13 @@ var (
 	// jobWatcherMemoryLimit defines the memory limit for the job pod when running on local cluster
 	jobWatcherMemoryLimit = flag.String("jobWatcherMemoryLimit", getEnvString("JOBWATCHERMEMORYLIMIT", "80Mi"), "Job Memory limit for local cluster (80Mi by default)")
 
-	// jobWatcherImage defines image for watcher
+	// jobFinalizerImage defines image for the job finalizer
 	jobFinalizerImage = flag.String("jobFinalizerImage", getEnvString("JOBFINALIZERIMAGE", "fbeltrao/aksjobscheduler-finalizer-dotnet:1.0"), "Job finalizer image (by default fbeltrao/aksjobscheduler-finalizer-dotnet:1.0)")
 
-	// jobFinalizerCPULimit defines the CPU limit for the job pod when running on local cluster
+	// jobFinalizerCPULimit defines the CPU limit for the job pod running on local cluster
 	jobFinalizerCPULimit = flag.String("jobFinalizerCPULimit", getEnvString("JOBFINALIZERCPULIMIT", "0.5"), "Job CPU limit for local cluster (0.5 by default)")
 
-	// jobFinalizerMemoryLimit defines the memory limit for the job pod when running on local cluster
+	// jobFinalizerMemoryLimit defines the memory limit for finalizer job pod running on local cluster
 	jobFinalizerMemoryLimit = flag.String("jobFinalizerMemoryLimit", getEnvString("JOBFINALIZERMEMORYLIMIT", "256Mi"), "Job Memory limit for local cluster (256Mi by default)")
 
 	batchImage            = flag.String("batchImage", getEnvString("BATCHIMAGE", ""), "Batch image")

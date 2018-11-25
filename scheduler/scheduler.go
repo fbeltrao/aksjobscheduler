@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -10,6 +11,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+)
+
+// copied from https://github.com/virtual-kubelet/virtual-kubelet/blob/aci-gpu/providers/azure/aci.go
+// use it from original source once it is merged to master
+const (
+	gpuResourceName   apiv1.ResourceName = "nvidia.com/gpu"
+	gpuTypeAnnotation                    = "virtual-kubelet.io/gpu-type"
 )
 
 // AnnotationExecutionLocation defines the annotation containing the job execution location
@@ -66,13 +74,30 @@ func NewScheduler(kubeconfig string) (*Scheduler, error) {
 func (s Scheduler) NewJob(request *AddJobRequest) (*batchv1.Job, error) {
 
 	resourceRequests := apiv1.ResourceList{}
+	resourceLimits := apiv1.ResourceList{}
+
+	hasGpu := len(request.GpuType) > 0 && request.GpuQuantity > 0
 
 	if len(request.CPU) > 0 {
-		resourceRequests[apiv1.ResourceCPU] = resource.MustParse(request.CPU)
+		cpuResource := resource.MustParse(request.CPU)
+		resourceRequests[apiv1.ResourceCPU] = cpuResource
+		if request.ExecutionLocation != JobExecutionInACI {
+			resourceLimits[apiv1.ResourceCPU] = cpuResource
+		}
+	}
+
+	if hasGpu {
+		gpuQuantity := resource.MustParse(strconv.Itoa(request.GpuQuantity))
+		resourceRequests[gpuResourceName] = gpuQuantity
+		resourceLimits[gpuResourceName] = gpuQuantity
 	}
 
 	if len(request.Memory) > 0 {
-		resourceRequests[apiv1.ResourceMemory] = resource.MustParse(request.Memory)
+		memoryResource := resource.MustParse(request.Memory)
+		resourceRequests[apiv1.ResourceMemory] = memoryResource
+		if request.ExecutionLocation != JobExecutionInACI {
+			resourceLimits[apiv1.ResourceMemory] = memoryResource
+		}
 	}
 
 	parallelismInt32 := int32(request.Parallelism)
@@ -91,6 +116,10 @@ func (s Scheduler) NewJob(request *AddJobRequest) (*batchv1.Job, error) {
 	}
 	for k, v := range request.Annotations {
 		annotations[k] = v
+	}
+
+	if len(request.GpuType) > 0 {
+		annotations[gpuTypeAnnotation] = request.GpuType
 	}
 
 	// Copy labels adding the execution location
@@ -125,6 +154,7 @@ func (s Scheduler) NewJob(request *AddJobRequest) (*batchv1.Job, error) {
 							Env:     request.Env,
 							Resources: apiv1.ResourceRequirements{
 								Requests: resourceRequests,
+								Limits:   resourceLimits,
 							},
 						},
 					},

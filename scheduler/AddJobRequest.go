@@ -30,6 +30,8 @@ type AddJobRequest struct {
 	Commands           []string
 	Memory             string
 	CPU                string
+	GpuQuantity        int
+	GpuType            string
 	Env                []apiv1.EnvVar
 	ServiceAccountName string
 }

@@ -22,6 +22,12 @@ func createJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	batchFlag := r.URL.Query().Get("batch")
 	useBatch := len(batchFlag) > 0 && batchFlag == "1"
+	forceAci := r.URL.Query().Get("aci") == "1"
+	gpuType := r.URL.Query().Get("gpu")
+	gpuQuantity, err := strconv.Atoi(r.URL.Query().Get("gpuQuantity"))
+	if err != nil {
+		gpuQuantity = 0
+	}
 
 	log.Infof("Received request to create job, content-size: %d, content-type is %s, use batch: %s", r.ContentLength, r.Header.Get("Content-Type"), strconv.FormatBool(useBatch))
 
@@ -51,7 +57,7 @@ func createJobHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		_, err = createKubernetesJob(jobID, *containerName, blobNamePrefix, locationsCount)
+		_, err = createKubernetesJob(jobID, *containerName, blobNamePrefix, locationsCount, forceAci, gpuType, gpuQuantity)
 		if err != nil {
 			responseWithError(w, err)
 			return

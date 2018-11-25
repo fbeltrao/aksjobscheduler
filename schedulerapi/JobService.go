@@ -147,7 +147,7 @@ func createBatchJob(jobID, containerName, blobNamePrefix string, itemsCount int)
 	return k8sScheduler.NewJob(&jobDetail)
 }
 
-func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsCount int) (*batchv1.Job, error) {
+func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsCount int, forceAci bool, gpuType string, gpuQuantity int) (*batchv1.Job, error) {
 
 	executionLocation := scheduler.JobExecutionInCluster
 	k8sScheduler, err := createScheduler()
@@ -156,7 +156,7 @@ func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsC
 	}
 
 	completions := int(math.Ceil(float64(locationsCount) / float64(*itemsPerJob)))
-	requiresACI := *aciCompletionsTrigger > 0 && completions >= *aciCompletionsTrigger
+	requiresACI := forceAci || (*aciCompletionsTrigger > 0 && completions >= *aciCompletionsTrigger)
 	parallelism := *maxParallelism
 	cpuLimit := *jobCPULimit
 	memoryLimit := *JobMemoryLimit
@@ -177,7 +177,7 @@ func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsC
 		return nil, err
 	}
 
-	log.Infof("Starting job %s, jobs count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s", jobID, locationsCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit)
+	log.Infof("Starting job %s, jobs count: %d, requiresACI: %t, completions: %d, parallelism: %d, cpu limit: %s, memory limit: %s, gpu: %d/%s", jobID, locationsCount, requiresACI, completions, parallelism, cpuLimit, memoryLimit, gpuQuantity, gpuType)
 
 	jobDetail := scheduler.AddJobRequest{
 		Completions:       completions,
@@ -191,6 +191,8 @@ func createKubernetesJob(jobID, containerName, blobNamePrefix string, locationsC
 		JobID:             jobID,
 		JobName:           jobID,
 		ExecutionLocation: executionLocation,
+		GpuQuantity:       gpuQuantity,
+		GpuType:           gpuType,
 		Annotations: map[string]string{
 			StorageContainerAnnotationName:  containerName,
 			StorageBlobPrefixAnnotationName: encodeBlobNamePrefix(blobNamePrefix),

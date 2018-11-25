@@ -10,7 +10,7 @@ namespace BatchConnector
 {
     public static class BatchCommunication
     {
-        private static BatchClient prepareConnection()
+        private static BatchClient PrepareConnection()
         {
             // Set up the Batch Service credentials used to authenticate with the Batch Service.
             BatchSharedKeyCredentials credentials = new BatchSharedKeyCredentials(
@@ -31,7 +31,7 @@ namespace BatchConnector
         /// </summary>
         public static void PreparePool()
         {
-            BatchClient batchClient = prepareConnection();
+            BatchClient batchClient = PrepareConnection();
             if (Environment.GetEnvironmentVariable("REGISTRYNAME") != null)
             {
                 ContainerRegistry containerRegistry = new ContainerRegistry(
@@ -43,31 +43,37 @@ namespace BatchConnector
                 // Create container configuration, prefetching Docker images from the container registry
                 ContainerConfiguration containerConfig = new ContainerConfiguration()
                 {
-                    ContainerImageNames = new List<string>() {
+                    ContainerImageNames = new List<string>() 
+                    {
                         Environment.GetEnvironmentVariable("WORKERIMAGENAME")
-            },
-                    ContainerRegistries = new List<ContainerRegistry> { containerRegistry }
-
+                    },
+                    ContainerRegistries = new List<ContainerRegistry> 
+                    { 
+                        containerRegistry 
+                    }
                 };
 
                 ImageReference imageReference = new ImageReference(
-             publisher: "microsoft-azure-batch",
-             offer: "ubuntu-server-container",
-             sku: "16-04-lts",
-             version: "latest");
+                    publisher: "microsoft-azure-batch",
+                    offer: "ubuntu-server-container",
+                    sku: "16-04-lts",
+                    version: "latest");
+                
                 // VM configuration
                 VirtualMachineConfiguration virtualMachineConfiguration = new VirtualMachineConfiguration(
                     imageReference: imageReference,
                     nodeAgentSkuId: "batch.node.ubuntu 16.04")
-                {
-                    ContainerConfiguration = containerConfig,
-                };
+                    {
+                        ContainerConfiguration = containerConfig,
+                    };
+
                 //Create pool
                 CloudPool pool = batchClient.PoolOperations.CreatePool(
                     poolId: "docker",
                     targetDedicatedComputeNodes: 1,
                     virtualMachineSize: "Standard_A2_v2",
                     virtualMachineConfiguration: virtualMachineConfiguration);
+
                 pool.Commit();
             }
         }
@@ -81,7 +87,7 @@ namespace BatchConnector
         /// <param name="taskEnvironmentSettings">Task's settings</param>
         /// <param name="taskName">The name of the task</param>
         /// <param name="taskDependencies">Dependencies the task has to wait upon</param>
-        private static void createTask(string jobId, string imageName, BatchClient batchClient, List<EnvironmentSetting> taskEnvironmentSettings,
+        private static void CreateTask(string jobId, string imageName, BatchClient batchClient, List<EnvironmentSetting> taskEnvironmentSettings,
           string taskName, List<string> taskDependencies)
         {
             // Assign the job preparation task to the job
@@ -110,7 +116,7 @@ namespace BatchConnector
         public static async Task SubmitJobAsync(String jobId, String poolId, String imageName, int completions, String destinationStorageAccount,
             String destinationStorageAccountKey, String destinationContainerName, String destinationPrefixName, String aggregatorImageName)
         {
-            BatchClient batchClient = prepareConnection();
+            BatchClient batchClient = PrepareConnection();
             System.Console.WriteLine("Connected to Batch service...");
             CloudJob newJob = batchClient.JobOperations.CreateJob();
             newJob.Id = jobId;
@@ -129,21 +135,18 @@ namespace BatchConnector
             List<String> jobIds = new List<String>();
             for (int i = 0; i < completions; i++)
             {
-                createTask(jobId, imageName, batchClient, taskEnvironmentSettings, i.ToString(), null);
+                CreateTask(jobId, imageName, batchClient, taskEnvironmentSettings, i.ToString(), null);
                 jobIds.Add(i.ToString());
                 System.Console.WriteLine("Created Task " + i.ToString());
             }
             System.Console.WriteLine("Creating aggregator...");
-            createTask(jobId, imageName, batchClient, taskEnvironmentSettings, "aggregator", jobIds);
+            CreateTask(jobId, imageName, batchClient, taskEnvironmentSettings, "aggregator", jobIds);
             while (batchClient.JobOperations.GetJob(jobId).State != JobState.Completed)
             {
-                System.Console.WriteLine(System.DateTime.Now + ": In waiting state for job: " + jobId + ", current state: " + batchClient.JobOperations.GetJob(jobId).State);
+                Console.WriteLine(System.DateTime.Now + ": In waiting state for job: " + jobId + ", current state: " + batchClient.JobOperations.GetJob(jobId).State);
                 Thread.Sleep(5000);
             }
-            System.Console.WriteLine("Job finished");
+            Console.WriteLine("Job finished");
         }
-
-
-
     }
 }
